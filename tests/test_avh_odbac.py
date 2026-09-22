@@ -161,3 +161,47 @@ def test_authorized_receiver_recovers_plaintext(scheme_data):
     )
 
     assert recovered_plaintext == plaintext
+def test_match_fails_when_receiver_does_not_satisfy_sender_policy(scheme_data):
+    scheme, pk, msk = scheme_data
+
+    sender_attributes = {1: 1, 2: 0, 3: 1}
+    receiver_attributes = {1: 0, 2: 0, 3: 1}
+
+    sender = scheme.sender_keygen(pk, msk, sender_attributes)
+    receiver = scheme.receiver_keygen(pk, msk, receiver_attributes)
+
+    sender_policy = scheme.policy_keygen(pk, msk, "a1v1")
+    receiver_policy = scheme.policy_keygen(pk, msk, "a2v0")
+
+    ciphertext = scheme.encrypt(pk, sender, sender_policy, b"message")
+    trapdoor, _ = scheme.transform_keygen(receiver, receiver_policy)
+
+    assert scheme.match(
+        ciphertext,
+        trapdoor,
+        sender_attributes,
+        receiver_attributes,
+    ) is None
+
+
+def test_match_fails_when_sender_does_not_satisfy_receiver_policy(scheme_data):
+    scheme, pk, msk = scheme_data
+
+    sender_attributes = {1: 0, 2: 0, 3: 1}
+    receiver_attributes = {1: 1, 2: 0, 3: 1}
+
+    sender = scheme.sender_keygen(pk, msk, sender_attributes)
+    receiver = scheme.receiver_keygen(pk, msk, receiver_attributes)
+
+    sender_policy = scheme.policy_keygen(pk, msk, "a2v0")
+    receiver_policy = scheme.policy_keygen(pk, msk, "a1v1")
+
+    ciphertext = scheme.encrypt(pk, sender, sender_policy, b"message")
+    trapdoor, _ = scheme.transform_keygen(receiver, receiver_policy)
+
+    assert scheme.match(
+        ciphertext,
+        trapdoor,
+        sender_attributes,
+        receiver_attributes,
+    ) is None

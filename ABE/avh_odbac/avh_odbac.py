@@ -28,6 +28,26 @@ class AVHODBAC(ABEnc):
         if any(value not in (0, 1) for value in attributes.values()):
             raise ValueError("every attribute value must be 0 or 1")
 
+    def _parse_policy_literal(self, literal):
+        base = literal.split("_")[0].lower()
+
+        if not base.startswith("a") or "v" not in base:
+            raise ValueError(
+                "policy attributes must use the form a<index>v<0-or-1>"
+            )
+
+        index_text, value_text = base[1:].split("v", 1)
+        index = int(index_text)
+        value = int(value_text)
+
+        if index not in range(1, self.universe_size + 1):
+            raise ValueError("policy attribute index is outside the universe")
+
+        if value not in (0, 1):
+            raise ValueError("policy attribute value must be 0 or 1")
+
+        return index, value
+
     def setup(self):
         g1 = self.group.random(G1)
         g2 = self.group.random(G2)
@@ -90,19 +110,30 @@ class AVHODBAC(ABEnc):
         }
 
     def policy_keygen(self, pk, msk, policy_str):
-        pass
+        policy = self.util.createPolicy(policy_str)
+        msp = self.util.convert_policy_to_msp(policy)
+        width = self.util.len_longest_row
 
-    def encrypt(self, pk, sender_key, sender_policy_key, plaintext):
-        pass
+        sharing_vector = [msk["f"]]
+        for _ in range(1, width):
+            sharing_vector.append(self.group.random(ZR))
 
-    def transform_keygen(self, receiver_key, receiver_policy_key):
-        pass
+        components = {}
 
-    def match(self, pk, ciphertext, trapdoor, cloud_registry):
-        pass
+        for literal, row in msp.items():
+            lambda_value = self.group.init(ZR, 0)
 
-    def final_decrypt(self, partial_ciphertext, ciphertext, local_secret):
-        pass
+            for column, coefficient in enumerate(row):
+                lambda_value += coefficient * sharing_vector[column]
 
-    def revoke(self, cloud_registry, user_id):
-        pass
+            index, value = self._parse_policy_literal(literal)
+            factor = msk["t"][index] if value == 1 else msk["e"][index]
+            components[literal] = pk["g1"] ** (lambda_value * factor)
+
+        return {
+            "policy_str": policy_str,
+            "policy": policy,
+            "msp": msp,
+            "width": width,
+            "components": components,
+        }

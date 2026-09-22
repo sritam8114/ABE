@@ -10,6 +10,11 @@ from cryptography.exceptions import InvalidTag
 
 
 class AVHODBAC(ABEnc):
+    def _user_token(self, user_id):
+        return self.group.serialize(user_id)
+
+    def revoke(self, revoked_user_ids, user_id):
+        revoked_user_ids.add(self._user_token(user_id))
 
     def __init__(self, group_obj, universe_size, verbose=False):
         ABEnc.__init__(self)
@@ -319,7 +324,19 @@ class AVHODBAC(ABEnc):
         trapdoor,
         sender_attributes,
         receiver_attributes,
+	revoked_user_ids=None,
+
     ):
+
+        if revoked_user_ids is not None:
+            sender_token = self._user_token(ciphertext["sender_id"])
+            receiver_token = self._user_token(trapdoor["receiver_id"])
+
+            if (
+                sender_token in revoked_user_ids
+                or receiver_token in revoked_user_ids
+            ):
+                return None
         """
         Research-prototype cloud match.
 

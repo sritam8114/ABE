@@ -205,3 +205,37 @@ def test_match_fails_when_sender_does_not_satisfy_receiver_policy(scheme_data):
         sender_attributes,
         receiver_attributes,
     ) is None
+def test_revoked_receiver_cannot_match(scheme_data):
+    scheme, pk, msk = scheme_data
+
+    sender_attributes = {1: 1, 2: 0, 3: 1}
+    receiver_attributes = {1: 1, 2: 0, 3: 0}
+
+    sender = scheme.sender_keygen(pk, msk, sender_attributes)
+    receiver = scheme.receiver_keygen(pk, msk, receiver_attributes)
+
+    sender_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
+    receiver_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
+
+    ciphertext = scheme.encrypt(
+        pk,
+        sender,
+        sender_policy,
+        b"revoked receiver must not read this",
+    )
+
+    trapdoor, _ = scheme.transform_keygen(
+        receiver,
+        receiver_policy,
+    )
+
+    revoked_user_ids = set()
+    scheme.revoke(revoked_user_ids, receiver["user_id"])
+
+    assert scheme.match(
+        ciphertext,
+        trapdoor,
+        sender_attributes,
+        receiver_attributes,
+        revoked_user_ids,
+    ) is None

@@ -88,3 +88,36 @@ def test_transform_keygen_blinds_receiver_components(scheme_data):
     assert set(local_secret) == {"x", "delta"}
     assert "x" not in trapdoor
     assert "delta" not in trapdoor
+def test_match_returns_partial_ciphertext_when_both_policies_match(scheme_data):
+    scheme, pk, msk = scheme_data
+
+    sender_attributes = {1: 1, 2: 0, 3: 1}
+    receiver_attributes = {1: 1, 2: 0, 3: 0}
+
+    sender = scheme.sender_keygen(pk, msk, sender_attributes)
+    receiver = scheme.receiver_keygen(pk, msk, receiver_attributes)
+
+    sender_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
+    receiver_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
+
+    ciphertext = scheme.encrypt(
+        pk,
+        sender,
+        sender_policy,
+        b"private IoT message",
+    )
+
+    trapdoor, _ = scheme.transform_keygen(
+        receiver,
+        receiver_policy,
+    )
+
+    partial_ciphertext = scheme.match(
+        ciphertext,
+        trapdoor,
+        sender_attributes,
+        receiver_attributes,
+    )
+
+    assert partial_ciphertext is not None
+    assert "mh" in partial_ciphertext

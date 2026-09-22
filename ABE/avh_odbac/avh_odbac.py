@@ -221,3 +221,79 @@ class AVHODBAC(ABEnc):
         }
 
         return trapdoor, local_secret
+    def _attribute_labels(self, attributes):
+        self._validate_attributes(attributes)
+
+        return [
+            "a{}v{}".format(index, value).upper()
+            for index, value in attributes.items()
+        ]
+
+    def match(
+        self,
+        ciphertext,
+        trapdoor,
+        sender_attributes,
+        receiver_attributes,
+    ):
+        """
+        Research-prototype cloud match.
+
+        sender_attributes and receiver_attributes are visible to the cloud in
+        this version. Replace this interface before claiming attribute privacy.
+        """
+        sender_labels = self._attribute_labels(sender_attributes)
+        receiver_labels = self._attribute_labels(receiver_attributes)
+
+        sender_nodes = self.util.prune(
+            ciphertext["sender_policy"],
+            receiver_labels,
+        )
+
+        receiver_nodes = self.util.prune(
+            trapdoor["receiver_policy"],
+            sender_labels,
+        )
+
+        if not sender_nodes or not receiver_nodes:
+            return None
+
+        sender_coefficients = self.util.getCoefficients(
+            ciphertext["sender_policy"]
+        )
+
+        receiver_coefficients = self.util.getCoefficients(
+            trapdoor["receiver_policy"]
+        )
+
+        mh = 1
+
+        for node in sender_nodes:
+            literal = node.getAttributeAndIndex()
+            index, _ = self._parse_policy_literal(literal)
+
+            ct3_adjusted = (
+                ciphertext["ct3"][literal]
+                ** (1 / trapdoor["receiver_id"])
+            )
+
+            mh *= (
+                pair(ct3_adjusted, trapdoor["tr1"][index])
+                ** sender_coefficients[literal]
+            )
+
+        for node in receiver_nodes:
+            literal = node.getAttributeAndIndex()
+            index, _ = self._parse_policy_literal(literal)
+
+            ct2_adjusted = (
+                ciphertext["ct2"][index]
+                ** (1 / ciphertext["sender_id"])
+            )
+
+            mh *= (
+                pair(trapdoor["tr2"][literal], ct2_adjusted)
+                ** receiver_coefficients[literal]
+            )
+
+        return {"mh": mh}

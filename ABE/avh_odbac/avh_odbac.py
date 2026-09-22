@@ -1,7 +1,10 @@
-from charm.toolbox.pairinggroup import ZR, G1, G2
+from charm.toolbox.pairinggroup import ZR, G1, G2, pair
 from charm.toolbox.ABEnc import ABEnc
 from ..msp import MSP
+import hashlib
+import os
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 class AVHODBAC(ABEnc):
 
@@ -136,4 +139,53 @@ class AVHODBAC(ABEnc):
             "msp": msp,
             "width": width,
             "components": components,
+        }
+    def _derive_symmetric_key(self, pairing_element):
+        
+        serialized = self.group.serialize(pairing_element)
+        return hashlib.sha256(serialized).digest()
+
+    def encrypt(self, pk, sender_key, sender_policy_key, plaintext):
+        if sender_key["role"] != "sender":
+            raise ValueError("encrypt requires a sender key")
+
+        if not isinstance(plaintext, bytes):
+            raise TypeError("plaintext must be bytes")
+
+        alpha = self._random_nonzero()
+        beta = self._random_nonzero()
+
+        session_element = (
+            pair(pk["F"], pk["g2"] ** alpha)
+            * pair(pk["F"], pk["g2"] ** beta)
+        )
+
+        aes_key = self._derive_symmetric_key(session_element)
+        nonce = os.urandom(12)
+        associated_data = b"AVH-OD-BAC-v1"
+        encrypted_payload = AESGCM(aes_key).encrypt(
+            nonce,
+            plaintext,
+            associated_data,
+        )
+
+        ct2 = {
+            index: component ** beta
+            for index, component in sender_key["K"].items()
+        }
+
+        ct3 = {
+            literal: component ** alpha
+            for literal, component in sender_policy_key["components"].items()
+        }
+
+        return {
+            "sender_id": sender_key["user_id"],
+            "sender_policy": sender_policy_key["policy"],
+            "sender_msp": sender_policy_key["msp"],
+            "ct2": ct2,
+            "ct3": ct3,
+            "nonce": nonce,
+            "associated_data": associated_data,
+            "payload": encrypted_payload,
         }

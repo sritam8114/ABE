@@ -58,3 +58,17 @@ def test_policy_keygen_creates_msp_bound_components(scheme_data):
     assert len(policy_key["msp"]) == 2
     assert len(policy_key["components"]) == 2
     assert {key.lower() for key in policy_key["components"]} == {"a1v1", "a2v0"}
+def test_encrypt_creates_protected_ciphertext(scheme_data):
+    scheme, pk, msk = scheme_data
+
+    sender = scheme.sender_keygen(pk, msk, {1: 1, 2: 0, 3: 1})
+    sender_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
+
+    plaintext = b"confidential IoT sensor data"
+    ciphertext = scheme.encrypt(pk, sender, sender_policy, plaintext)
+
+    assert len(ciphertext["ct2"]) == 3
+    assert len(ciphertext["ct3"]) == 2
+    assert ciphertext["nonce"] != b""
+    assert ciphertext["payload"] != plaintext
+    assert ciphertext["associated_data"] == b"AVH-OD-BAC-v1"

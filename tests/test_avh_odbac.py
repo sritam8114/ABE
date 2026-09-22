@@ -72,3 +72,19 @@ def test_encrypt_creates_protected_ciphertext(scheme_data):
     assert ciphertext["nonce"] != b""
     assert ciphertext["payload"] != plaintext
     assert ciphertext["associated_data"] == b"AVH-OD-BAC-v1"
+def test_transform_keygen_blinds_receiver_components(scheme_data):
+    scheme, pk, msk = scheme_data
+
+    receiver = scheme.receiver_keygen(pk, msk, {1: 1, 2: 0, 3: 1})
+    receiver_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
+
+    trapdoor, local_secret = scheme.transform_keygen(
+        receiver,
+        receiver_policy,
+    )
+
+    assert len(trapdoor["tr1"]) == 3
+    assert len(trapdoor["tr2"]) == 2
+    assert set(local_secret) == {"x", "delta"}
+    assert "x" not in trapdoor
+    assert "delta" not in trapdoor

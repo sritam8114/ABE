@@ -189,3 +189,35 @@ class AVHODBAC(ABEnc):
             "associated_data": associated_data,
             "payload": encrypted_payload,
         }
+    def transform_keygen(self, receiver_key, receiver_policy_key):
+        if receiver_key["role"] != "receiver":
+            raise ValueError("transform_keygen requires a receiver key")
+
+        x = self._random_nonzero()
+        delta = self._random_nonzero()
+        blind = x * delta
+
+        tr1 = {
+            index: component ** blind
+            for index, component in receiver_key["K"].items()
+        }
+
+        tr2 = {
+            literal: component ** blind
+            for literal, component in receiver_policy_key["components"].items()
+        }
+
+        trapdoor = {
+            "receiver_id": receiver_key["user_id"],
+            "receiver_policy": receiver_policy_key["policy"],
+            "receiver_msp": receiver_policy_key["msp"],
+            "tr1": tr1,
+            "tr2": tr2,
+        }
+
+        local_secret = {
+            "x": x,
+            "delta": delta,
+        }
+
+        return trapdoor, local_secret

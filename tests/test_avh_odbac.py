@@ -121,3 +121,43 @@ def test_match_returns_partial_ciphertext_when_both_policies_match(scheme_data):
 
     assert partial_ciphertext is not None
     assert "mh" in partial_ciphertext
+def test_authorized_receiver_recovers_plaintext(scheme_data):
+    scheme, pk, msk = scheme_data
+
+    sender_attributes = {1: 1, 2: 0, 3: 1}
+    receiver_attributes = {1: 1, 2: 0, 3: 0}
+
+    sender = scheme.sender_keygen(pk, msk, sender_attributes)
+    receiver = scheme.receiver_keygen(pk, msk, receiver_attributes)
+
+    sender_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
+    receiver_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
+
+    plaintext = b"authorized receiver can read this"
+
+    ciphertext = scheme.encrypt(
+        pk,
+        sender,
+        sender_policy,
+        plaintext,
+    )
+
+    trapdoor, local_secret = scheme.transform_keygen(
+        receiver,
+        receiver_policy,
+    )
+
+    partial_ciphertext = scheme.match(
+        ciphertext,
+        trapdoor,
+        sender_attributes,
+        receiver_attributes,
+    )
+
+    recovered_plaintext = scheme.final_decrypt(
+        ciphertext,
+        partial_ciphertext,
+        local_secret,
+    )
+
+    assert recovered_plaintext == plaintext

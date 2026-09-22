@@ -3,8 +3,11 @@ from charm.toolbox.ABEnc import ABEnc
 from ..msp import MSP
 import hashlib
 import os
-
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
+
+
+
 
 class AVHODBAC(ABEnc):
 
@@ -228,6 +231,87 @@ class AVHODBAC(ABEnc):
             "a{}v{}".format(index, value).upper()
             for index, value in attributes.items()
         ]
+    def _msp_reconstruction_coefficients(self, msp, nodes):
+        literals = [node.getAttributeAndIndex() for node in nodes]
+        width = max(len(msp[literal]) for literal in literals)
+        variable_count = len(literals)
+
+        zero = self.group.init(ZR, 0)
+        one = self.group.init(ZR, 1)
+
+        augmented = []
+
+        for equation in range(width):
+            row = []
+
+            for literal in literals:
+                msp_row = msp[literal]
+                value = msp_row[equation] if equation < len(msp_row) else 0
+                row.append(self.group.init(ZR, value))
+
+            row.append(one if equation == 0 else zero)
+            augmented.append(row)
+
+        pivot_row = 0
+        pivot_columns = []
+
+        for column in range(variable_count):
+            pivot = None
+
+            for row in range(pivot_row, width):
+                if augmented[row][column] != zero:
+                    pivot = row
+                    break
+
+            if pivot is None:
+                continue
+
+            augmented[pivot_row], augmented[pivot] = (
+                augmented[pivot],
+                augmented[pivot_row],
+            )
+
+            inverse = one / augmented[pivot_row][column]
+            augmented[pivot_row] = [
+                value * inverse for value in augmented[pivot_row]
+            ]
+
+            for row in range(width):
+                if row == pivot_row:
+                    continue
+
+                factor = augmented[row][column]
+
+                if factor != zero:
+                    augmented[row] = [
+                        augmented[row][item] -
+                        factor * augmented[pivot_row][item]
+                        for item in range(variable_count + 1)
+                    ]
+
+            pivot_columns.append(column)
+            pivot_row += 1
+
+            if pivot_row == width:
+                break
+
+        for row in range(pivot_row, width):
+            if all(
+                augmented[row][column] == zero
+                for column in range(variable_count)
+            ) and augmented[row][-1] != zero:
+                raise ValueError("selected MSP rows cannot reconstruct the secret")
+
+        solution = [zero for _ in range(variable_count)]
+
+        for row, column in enumerate(pivot_columns):
+            solution[column] = augmented[row][-1]
+
+        return {
+            literal: solution[index]
+            for index, literal in enumerate(literals)
+        }
+
 
     def match(
         self,
@@ -258,12 +342,14 @@ class AVHODBAC(ABEnc):
         if not sender_nodes or not receiver_nodes:
             return None
 
-        sender_coefficients = self.util.getCoefficients(
-            ciphertext["sender_policy"]
+        sender_coefficients = self._msp_reconstruction_coefficients(
+            ciphertext["sender_msp"],
+            sender_nodes,
         )
 
-        receiver_coefficients = self.util.getCoefficients(
-            trapdoor["receiver_policy"]
+        receiver_coefficients = self._msp_reconstruction_coefficients(
+            trapdoor["receiver_msp"],
+            receiver_nodes,
         )
 
         mh = 1
@@ -297,3 +383,23 @@ class AVHODBAC(ABEnc):
             )
 
         return {"mh": mh}
+    def final_decrypt(self, ciphertext, partial_ciphertext, local_secret):
+        if partial_ciphertext is None:
+            return None
+
+        if "mh" not in partial_ciphertext:
+            raise ValueError("partial ciphertext does not contain mh")
+
+        blind = local_secret["x"] * local_secret["delta"]
+
+        session_element = partial_ciphertext["mh"] ** (1 / blind)
+        aes_key = self._derive_symmetric_key(session_element)
+
+        try:
+            return AESGCM(aes_key).decrypt(
+                ciphertext["nonce"],
+                ciphertext["payload"],
+                ciphertext["associated_data"],
+            )
+        except InvalidTag:
+            return None

@@ -420,3 +420,83 @@ class AVHODBAC(ABEnc):
             )
         except InvalidTag:
             return None
+    def _build_opaque_policy(self, policy_spec, prefix, state):
+        if "index" in policy_spec and "value" in policy_spec:
+            index = policy_spec["index"]
+            value = policy_spec["value"]
+
+            if index not in range(1, self.universe_size + 1):
+                raise ValueError("policy attribute index is outside the universe")
+
+            if value not in (0, 1):
+                raise ValueError("policy attribute value must be 0 or 1")
+
+            row_id = "{}{}".format(prefix, state["next_row"])
+            state["next_row"] += 1
+            state["row_values"][row_id] = (index, value)
+
+            return row_id
+
+        if "and" in policy_spec:
+            left, right = policy_spec["and"]
+
+            return "({} and {})".format(
+                self._build_opaque_policy(left, prefix, state),
+                self._build_opaque_policy(right, prefix, state),
+            )
+
+        if "or" in policy_spec:
+            left, right = policy_spec["or"]
+
+            return "({} or {})".format(
+                self._build_opaque_policy(left, prefix, state),
+                self._build_opaque_policy(right, prefix, state),
+            )
+
+        raise ValueError("invalid structured policy")
+
+    def policy_keygen_hidden(self, pk, msk, policy_spec, prefix):
+        state = {
+            "next_row": 0,
+            "row_values": {},
+        }
+
+        opaque_policy_str = self._build_opaque_policy(
+            policy_spec,
+            prefix,
+            state,
+        )
+
+        opaque_policy = self.util.createPolicy(opaque_policy_str)
+        opaque_msp = self.util.convert_policy_to_msp(opaque_policy)
+        width = self.util.len_longest_row
+
+        sharing_vector = [msk["f"]]
+        for _ in range(1, width):
+            sharing_vector.append(self.group.random(ZR))
+
+        components = {}
+        row_to_index = {}
+
+        for literal, row in opaque_msp.items():
+            opaque_row_id = literal.lower()
+            index, value = state["row_values"][opaque_row_id]
+
+            lambda_value = self.group.init(ZR, 0)
+
+            for column, coefficient in enumerate(row):
+                lambda_value += coefficient * sharing_vector[column]
+
+            factor = msk["t"][index] if value == 1 else msk["e"][index]
+
+            components[literal] = pk["g1"] ** (lambda_value * factor)
+            row_to_index[literal] = index
+
+        return {
+            "components": components,
+            "cloud_policy": {
+                "opaque_policy": opaque_policy,
+                "opaque_msp": opaque_msp,
+                "row_to_index": row_to_index,
+            },
+        }

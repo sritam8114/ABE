@@ -239,3 +239,27 @@ def test_revoked_receiver_cannot_match(scheme_data):
         receiver_attributes,
         revoked_user_ids,
     ) is None
+def test_hidden_policy_uses_opaque_rows_without_values(scheme_data):
+    scheme, pk, msk = scheme_data
+
+    policy_spec = {
+        "and": [
+            {"index": 1, "value": 1},
+            {"index": 2, "value": 0},
+        ],
+    }
+
+    hidden_policy = scheme.policy_keygen_hidden(
+        pk,
+        msk,
+        policy_spec,
+        "sp",
+    )
+
+    cloud_policy = hidden_policy["cloud_policy"]
+
+    assert len(hidden_policy["components"]) == 2
+    assert set(cloud_policy["row_to_index"].values()) == {1, 2}
+    assert "a1v1" not in str(cloud_policy)
+    assert "a2v0" not in str(cloud_policy)
+    assert "value" not in cloud_policy

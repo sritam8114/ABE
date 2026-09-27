@@ -66,10 +66,12 @@ class AVHODBAC(ABEnc):
         f = self._random_nonzero()
         t = {}
         e = {}
+        s = {}
 
         for i in range(1, self.universe_size + 1):
             t[i] = self._random_nonzero()
             e[i] = self._random_nonzero()
+            s[i] = self._random_nonzero()
 
         pk = {
             "g1": g1,
@@ -77,6 +79,7 @@ class AVHODBAC(ABEnc):
             "F": g1 ** f,
             "T": {i: g1 ** t[i] for i in t},
             "E": {i: g1 ** e[i] for i in e},
+        "H": {i: g1 ** s[i] for i in s},
             "universe_size": self.universe_size,
         }
 
@@ -84,6 +87,7 @@ class AVHODBAC(ABEnc):
             "f": f,
             "t": t,
             "e": e,
+        "s": s,
         }
 
         return pk, msk
@@ -92,16 +96,20 @@ class AVHODBAC(ABEnc):
         self._validate_attributes(attributes)
         mu = self._random_nonzero()
         components = {}
+        sk_values = {}
 
         for i, value in attributes.items():
             denominator = msk["t"][i] if value == 1 else msk["e"][i]
-            components[i] = pk["g2"] ** (mu / denominator)
+            sk_i = mu / denominator
+            components[i] = pk["g2"] ** sk_i
+            sk_values[i] = sk_i
 
         return {
             "role": "sender",
             "user_id": mu,
             "attributes": dict(attributes),
             "K": components,
+            "sk_values": sk_values,
         }
 
     def receiver_keygen(self, pk, msk, attributes):
@@ -153,15 +161,40 @@ class AVHODBAC(ABEnc):
         serialized = self.group.serialize(pairing_element)
         return hashlib.sha256(serialized).digest()
 
-    def encrypt(self, pk, sender_key, sender_policy_key, plaintext):
+    def fkgen(self, msk, y):
+        if not isinstance(y, (list, tuple)):
+            raise TypeError("y must be a list or tuple")
+
+        if len(y) != self.universe_size:
+            raise ValueError(
+                "y length must equal universe_size"
+            )
+
+        sk_y = self.group.init(ZR, 0)
+
+        for k in range(1, self.universe_size + 1):
+            y_k = self.group.init(ZR, y[k - 1])
+            sk_y += (msk["s"][k] / msk["f"]) * y_k
+
+        return sk_y
+
+    def encrypt(self, pk, sender_key, sender_policy_key, plaintext,data_vector):
         if sender_key["role"] != "sender":
             raise ValueError("encrypt requires a sender key")
 
         if not isinstance(plaintext, bytes):
             raise TypeError("plaintext must be bytes")
+        if not isinstance(data_vector, (list, tuple)):
+            raise TypeError("data_vector must be a list or tuple")
+
+        if len(data_vector) != self.universe_size:
+            raise ValueError(
+                  "data_vector length must equal universe_size"
+            )
 
         alpha = self._random_nonzero()
         beta = self._random_nonzero()
+        s = alpha + beta
 
         session_element = (
             pair(pk["F"], pk["g2"] ** alpha)
@@ -186,6 +219,23 @@ class AVHODBAC(ABEnc):
             literal: component ** alpha
             for literal, component in sender_policy_key["components"].items()
         }
+        base_pairing = pair(pk["g1"], pk["g2"])
+        g2_s = pk["g2"] ** s
+        ck = {}
+
+        for k in sender_key["attributes"]:
+            if k not in pk["H"]:
+                raise ValueError(
+                    "missing H component for attribute {}".format(k)
+                )
+
+            x_k = self.group.init(ZR, data_vector[k - 1])
+            h_k = pk["H"][k]
+
+            ck[k] = (
+                pair(h_k, g2_s)
+                * (base_pairing ** x_k)
+            )
 
         return {
             "sender_id": sender_key["user_id"],
@@ -193,6 +243,10 @@ class AVHODBAC(ABEnc):
             "sender_msp": sender_policy_key["msp"],
             "ct2": ct2,
             "ct3": ct3,
+            "ck": ck,
+            "K": session_element,
+            "data_vector": list(data_vector),
+            "base_pairing": base_pairing,
             "nonce": nonce,
             "associated_data": associated_data,
             "payload": encrypted_payload,
@@ -201,9 +255,9 @@ class AVHODBAC(ABEnc):
         if receiver_key["role"] != "receiver":
             raise ValueError("transform_keygen requires a receiver key")
 
-        x = self._random_nonzero()
+        tau = self._random_nonzero()
         delta = self._random_nonzero()
-        blind = x * delta
+        blind = tau * delta
 
         tr1 = {
             index: component ** blind
@@ -224,7 +278,7 @@ class AVHODBAC(ABEnc):
         }
 
         local_secret = {
-            "x": x,
+            "tau": tau,
             "delta": delta,
         }
 
@@ -324,7 +378,7 @@ class AVHODBAC(ABEnc):
         trapdoor,
         sender_attributes,
         receiver_attributes,
-	revoked_user_ids=None,
+    revoked_user_ids=None,
 
     ):
 
@@ -400,26 +454,104 @@ class AVHODBAC(ABEnc):
             )
 
         return {"mh": mh}
-    def final_decrypt(self, ciphertext, partial_ciphertext, local_secret):
+    def final_decrypt(
+        self,
+        ciphertext,
+        partial_ciphertext,
+        local_secret,
+        sk_y,
+        y,
+    ):
         if partial_ciphertext is None:
             return None
 
         if "mh" not in partial_ciphertext:
             raise ValueError("partial ciphertext does not contain mh")
 
-        blind = local_secret["x"] * local_secret["delta"]
+        if not isinstance(y, (list, tuple)):
+            raise TypeError("y must be a list or tuple")
 
+        if len(y) != self.universe_size:
+            raise ValueError(
+                "y length must equal universe_size"
+            )
+
+        if "ck" not in ciphertext:
+            raise ValueError("ciphertext does not contain ck")
+
+        if "K" not in ciphertext:
+            raise ValueError("ciphertext does not contain K")
+
+        if "data_vector" not in ciphertext:
+            raise ValueError("ciphertext does not contain data_vector")
+
+        if "base_pairing" not in ciphertext:
+            raise ValueError("ciphertext does not contain base_pairing")
+
+        x = ciphertext["data_vector"]
+
+        if len(x) != self.universe_size:
+            raise ValueError(
+                "data_vector length must equal universe_size"
+            )
+
+        # Recover the pairing/session element using the modified TrGen
+        # variable tau instead of the original x.
+        blind = local_secret["tau"] * local_secret["delta"]
         session_element = partial_ciphertext["mh"] ** (1 / blind)
+
         aes_key = self._derive_symmetric_key(session_element)
 
         try:
-            return AESGCM(aes_key).decrypt(
+            recovered_plaintext = AESGCM(aes_key).decrypt(
                 ciphertext["nonce"],
                 ciphertext["payload"],
                 ciphertext["associated_data"],
             )
         except InvalidTag:
             return None
+
+        # ----------------------------------------------------------
+        # Part 3: Functional-key verification
+        #
+        # D = product(C_k ^ y_k) / K ^ SK_y
+        # Check:
+        # D == e(g,g) ^ <x,y>
+        # ----------------------------------------------------------
+
+        ck_values = ciphertext["ck"]
+
+        for k in range(1, self.universe_size + 1):
+            if k not in ck_values:
+                raise ValueError(
+                    "ciphertext missing C_k for attribute {}".format(k)
+                )
+
+        # GT identity from an existing pairing element.
+        first_ck = ck_values[1]
+        numerator = first_ck ** 0
+
+        for k in range(1, self.universe_size + 1):
+            y_k = self.group.init(ZR, y[k - 1])
+            numerator *= ck_values[k] ** y_k
+
+        denominator = ciphertext["K"] ** sk_y
+        D = numerator / denominator
+
+        inner_product = self.group.init(ZR, 0)
+
+        for k in range(1, self.universe_size + 1):
+            x_k = self.group.init(ZR, x[k - 1])
+            y_k = self.group.init(ZR, y[k - 1])
+            inner_product += x_k * y_k
+
+        expected_D = ciphertext["base_pairing"] ** inner_product
+
+        if D != expected_D:
+            return None
+
+        return recovered_plaintext
+
     def _build_opaque_policy(self, policy_spec, prefix, state):
         if "index" in policy_spec and "value" in policy_spec:
             index = policy_spec["index"]

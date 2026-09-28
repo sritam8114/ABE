@@ -115,7 +115,11 @@ print("    Status           : SUCCESS")
 # 7. Encrypt message
 # ----------------------------------------------------------
 
-plaintext = b"Confidential IoT sensor data"
+x = [1, 2, 3]
+y = [1, 0, 1]
+sk_y = scheme.fkgen(msk, y)
+
+plaintext = input("Enter message: ").encode()
 
 print("\n[7] Encrypting message...")
 
@@ -126,7 +130,8 @@ ciphertext = scheme.encrypt(
     sender,
     sender_policy,
     plaintext
-)
+,
+    x)
 
 print("    Encryption        : SUCCESS")
 print("    Plaintext hidden  :", ciphertext["payload"] != plaintext)
@@ -179,7 +184,9 @@ recovered_plaintext = scheme.final_decrypt(
     ciphertext,
     partial_ciphertext,
     local_secret
-)
+,
+    sk_y,
+    y)
 
 print("    Decryption successful : SUCCESS")
 print("    Recovered message     :", recovered_plaintext.decode())
@@ -202,3 +209,13 @@ else:
 print("\n" + "=" * 60)
 print("             AVH-ODBAC DEMO COMPLETED")
 print("=" * 60)
+
+
+print("\n" + "=" * 50)
+print("          OUTPUT AFTER DECRYPTION")
+print("=" * 50)
+print("Data vector x       :", x)
+print("Functional vector y :", y)
+print("Inner product <x,y> :", sum(a * b for a, b in zip(x, y)))
+print("Recovered plaintext  :", recovered_plaintext.decode() if recovered_plaintext else None)
+print("=" * 50)

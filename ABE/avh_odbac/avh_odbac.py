@@ -1,3 +1,4 @@
+import json
 from charm.toolbox.pairinggroup import ZR, G1, G2, pair
 from charm.toolbox.ABEnc import ABEnc
 from ..msp import MSP
@@ -178,18 +179,16 @@ class AVHODBAC(ABEnc):
 
         return sk_y
 
-    def encrypt(self, pk, sender_key, sender_policy_key, plaintext,data_vector):
+    def encrypt(self, pk, sender_key, sender_policy_key, x):
         if sender_key["role"] != "sender":
             raise ValueError("encrypt requires a sender key")
 
-        if not isinstance(plaintext, bytes):
-            raise TypeError("plaintext must be bytes")
-        if not isinstance(data_vector, (list, tuple)):
-            raise TypeError("data_vector must be a list or tuple")
+        if not isinstance(x, (list, tuple)):
+            raise TypeError("x must be a list or tuple")
 
-        if len(data_vector) != self.universe_size:
+        if len(x) != self.universe_size:
             raise ValueError(
-                  "data_vector length must equal universe_size"
+                "x length must equal universe_size"
             )
 
         alpha = self._random_nonzero()
@@ -204,9 +203,17 @@ class AVHODBAC(ABEnc):
         aes_key = self._derive_symmetric_key(session_element)
         nonce = os.urandom(12)
         associated_data = b"AVH-OD-BAC-v1"
+
+        # The paper-level encryption input is now x.
+        # We serialize x so it can be protected by AES-GCM.
+        x_payload = json.dumps(
+            list(x),
+            separators=(",", ":"),
+        ).encode("utf-8")
+
         encrypted_payload = AESGCM(aes_key).encrypt(
             nonce,
-            plaintext,
+            x_payload,
             associated_data,
         )
 
@@ -219,6 +226,7 @@ class AVHODBAC(ABEnc):
             literal: component ** alpha
             for literal, component in sender_policy_key["components"].items()
         }
+
         base_pairing = pair(pk["g1"], pk["g2"])
         g2_s = pk["g2"] ** s
         ck = {}
@@ -229,7 +237,7 @@ class AVHODBAC(ABEnc):
                     "missing H component for attribute {}".format(k)
                 )
 
-            x_k = self.group.init(ZR, data_vector[k - 1])
+            x_k = self.group.init(ZR, x[k - 1])
             h_k = pk["H"][k]
 
             ck[k] = (
@@ -245,12 +253,13 @@ class AVHODBAC(ABEnc):
             "ct3": ct3,
             "ck": ck,
             "K": session_element,
-            "data_vector": list(data_vector),
+            "data_vector": list(x),
             "base_pairing": base_pairing,
             "nonce": nonce,
             "associated_data": associated_data,
             "payload": encrypted_payload,
         }
+
     def transform_keygen(self, receiver_key, receiver_policy_key):
         if receiver_key["role"] != "receiver":
             raise ValueError("transform_keygen requires a receiver key")
@@ -495,15 +504,13 @@ class AVHODBAC(ABEnc):
                 "data_vector length must equal universe_size"
             )
 
-        # Recover the pairing/session element using the modified TrGen
-        # variable tau instead of the original x.
         blind = local_secret["tau"] * local_secret["delta"]
         session_element = partial_ciphertext["mh"] ** (1 / blind)
 
         aes_key = self._derive_symmetric_key(session_element)
 
         try:
-            recovered_plaintext = AESGCM(aes_key).decrypt(
+            recovered_x_bytes = AESGCM(aes_key).decrypt(
                 ciphertext["nonce"],
                 ciphertext["payload"],
                 ciphertext["associated_data"],
@@ -512,11 +519,9 @@ class AVHODBAC(ABEnc):
             return None
 
         # ----------------------------------------------------------
-        # Part 3: Functional-key verification
-        #
+        # Part 3:
         # D = product(C_k ^ y_k) / K ^ SK_y
-        # Check:
-        # D == e(g,g) ^ <x,y>
+        # Check D == e(g,g) ^ <x,y>
         # ----------------------------------------------------------
 
         ck_values = ciphertext["ck"]
@@ -527,7 +532,6 @@ class AVHODBAC(ABEnc):
                     "ciphertext missing C_k for attribute {}".format(k)
                 )
 
-        # GT identity from an existing pairing element.
         first_ck = ck_values[1]
         numerator = first_ck ** 0
 
@@ -550,7 +554,18 @@ class AVHODBAC(ABEnc):
         if D != expected_D:
             return None
 
-        return recovered_plaintext
+        # Confirm that the protected payload is actually x.
+        try:
+            recovered_x = json.loads(
+                recovered_x_bytes.decode("utf-8")
+            )
+        except (ValueError, UnicodeDecodeError):
+            return None
+
+        if recovered_x != list(x):
+            return None
+
+        return recovered_x
 
     def _build_opaque_policy(self, policy_spec, prefix, state):
         if "index" in policy_spec and "value" in policy_spec:

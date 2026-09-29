@@ -67,7 +67,12 @@ def test_encrypt_creates_protected_ciphertext(scheme_data):
     sender_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
 
     plaintext = b"confidential IoT sensor data"
-    ciphertext = scheme.encrypt(pk, sender, sender_policy, plaintext, TEST_X)
+    ciphertext = scheme.encrypt(
+        pk,
+        sender,
+        sender_policy,
+        TEST_X,
+    )
 
     assert len(ciphertext["ct2"]) == 3
     assert len(ciphertext["ct3"]) == 2
@@ -106,7 +111,6 @@ def test_match_returns_partial_ciphertext_when_both_policies_match(scheme_data):
         pk,
         sender,
         sender_policy,
-        b"private IoT message",
         TEST_X,
     )
 
@@ -142,7 +146,6 @@ def test_authorized_receiver_recovers_plaintext(scheme_data):
         pk,
         sender,
         sender_policy,
-        plaintext,
         TEST_X,
     )
 
@@ -161,7 +164,7 @@ def test_authorized_receiver_recovers_plaintext(scheme_data):
     y = [1, 0, 1]
     sk_y = scheme.fkgen(msk, y)
 
-    recovered_plaintext = scheme.final_decrypt(
+    recovered_x = scheme.final_decrypt(
         ciphertext,
         partial_ciphertext,
         local_secret,
@@ -169,7 +172,7 @@ def test_authorized_receiver_recovers_plaintext(scheme_data):
         y,
     )
 
-    assert recovered_plaintext == plaintext
+    assert recovered_x == TEST_X
 def test_match_fails_when_receiver_does_not_satisfy_sender_policy(scheme_data):
     scheme, pk, msk = scheme_data
 
@@ -182,7 +185,12 @@ def test_match_fails_when_receiver_does_not_satisfy_sender_policy(scheme_data):
     sender_policy = scheme.policy_keygen(pk, msk, "a1v1")
     receiver_policy = scheme.policy_keygen(pk, msk, "a2v0")
 
-    ciphertext = scheme.encrypt(pk, sender, sender_policy, b"message", TEST_X)
+    ciphertext = scheme.encrypt(
+        pk,
+        sender,
+        sender_policy,
+        TEST_X,
+    )
     trapdoor, _ = scheme.transform_keygen(receiver, receiver_policy)
 
     assert scheme.match(
@@ -205,7 +213,12 @@ def test_match_fails_when_sender_does_not_satisfy_receiver_policy(scheme_data):
     sender_policy = scheme.policy_keygen(pk, msk, "a2v0")
     receiver_policy = scheme.policy_keygen(pk, msk, "a1v1")
 
-    ciphertext = scheme.encrypt(pk, sender, sender_policy, b"message", TEST_X)
+    ciphertext = scheme.encrypt(
+        pk,
+        sender,
+        sender_policy,
+        TEST_X,
+    )
     trapdoor, _ = scheme.transform_keygen(receiver, receiver_policy)
 
     assert scheme.match(
@@ -230,7 +243,6 @@ def test_revoked_receiver_cannot_match(scheme_data):
         pk,
         sender,
         sender_policy,
-        b"revoked receiver must not read this",
         TEST_X,
     )
 

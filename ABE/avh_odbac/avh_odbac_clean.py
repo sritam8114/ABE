@@ -1,11 +1,6 @@
-import json
 from charm.toolbox.pairinggroup import ZR, G1, G2, pair
 from charm.toolbox.ABEnc import ABEnc
 from ..msp import MSP
-import hashlib
-import os
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.exceptions import InvalidTag
 
 class AVHODBAC(ABEnc):
 
@@ -146,19 +141,21 @@ class AVHODBAC(ABEnc):
             "width": width,
             "components": components,
         }
-    def _derive_symmetric_key(self, pairing_element):
-        
-        serialized = self.group.serialize(pairing_element)
-        return hashlib.sha256(serialized).digest()
-
     def fkgen(self, msk, y):
+        """
+        Part 3: FKGen(msk, y) -> SK_y
+
+        y = (y_1, ..., y_n), y_k in {0,1}
+
+        SK_y = sum_k ((s_k / f) * y_k) mod p
+
+        Charm's ZR arithmetic performs the modulo-p operation.
+        """
         if not isinstance(y, (list, tuple)):
             raise TypeError("y must be a list or tuple")
 
         if len(y) != self.universe_size:
-            raise ValueError(
-                "y length must equal universe_size"
-            )
+            raise ValueError("y length must equal universe_size")
 
         sk_y = self.group.init(ZR, 0)
 
@@ -168,7 +165,7 @@ class AVHODBAC(ABEnc):
 
         return sk_y
 
-    def encrypt(self, pk, sender_key, sender_policy_key, x):
+    def encrypt(self, pk, msk, sender_key, sender_policy_key, x):
         if sender_key["role"] != "sender":
             raise ValueError("encrypt requires a sender key")
 
@@ -184,27 +181,8 @@ class AVHODBAC(ABEnc):
         beta = self._random_nonzero()
         s = alpha + beta
 
-        session_element = (
-            pair(pk["F"], pk["g2"] ** alpha)
-            * pair(pk["F"], pk["g2"] ** beta)
-        )
-
-        aes_key = self._derive_symmetric_key(session_element)
-        nonce = os.urandom(12)
-        associated_data = b"AVH-OD-BAC-v1"
-
-        # The paper-level encryption input is now x.
-        # We serialize x so it can be protected by AES-GCM.
-        x_payload = json.dumps(
-            list(x),
-            separators=(",", ":"),
-        ).encode("utf-8")
-
-        encrypted_payload = AESGCM(aes_key).encrypt(
-            nonce,
-            x_payload,
-            associated_data,
-        )
+        # K = e(F, g^s), where s = alpha + beta.
+        K = pair(pk["F"], pk["g2"] ** s)
 
         ct2 = {
             index: component ** beta
@@ -217,20 +195,16 @@ class AVHODBAC(ABEnc):
         }
 
         base_pairing = pair(pk["g1"], pk["g2"])
-        g2_s = pk["g2"] ** s
         ck = {}
 
-        for k in sender_key["attributes"]:
-            if k not in pk["H"]:
-                raise ValueError(
-                    "missing H component for attribute {}".format(k)
-                )
-
+        for k in range(1, self.universe_size + 1):
+            s_k = msk["s"][k]
             x_k = self.group.init(ZR, x[k - 1])
-            h_k = pk["H"][k]
 
+            # Exact requested formula:
+            # C_k = e(g,g)^(s*s_k) * e(g,g)^x_k
             ck[k] = (
-                pair(h_k, g2_s)
+                (base_pairing ** (s * s_k))
                 * (base_pairing ** x_k)
             )
 
@@ -241,12 +215,8 @@ class AVHODBAC(ABEnc):
             "ct2": ct2,
             "ct3": ct3,
             "ck": ck,
-            "K": session_element,
-            "data_vector": list(x),
+            "K": K,
             "base_pairing": base_pairing,
-            "nonce": nonce,
-            "associated_data": associated_data,
-            "payload": encrypted_payload,
         }
 
     def transform_keygen(self, receiver_key, receiver_policy_key):
@@ -441,27 +411,26 @@ class AVHODBAC(ABEnc):
             )
 
         return {"mh": mh}
-    def final_decrypt(
-        self,
-        ciphertext,
-        partial_ciphertext,
-        local_secret,
-        sk_y,
-        y,
-    ):
-        if partial_ciphertext is None:
-            return None
+    def compute_D(self, ciphertext, sk_y, x, y):
+        """
+        Part 3 verification.
 
-        if "mh" not in partial_ciphertext:
-            raise ValueError("partial ciphertext does not contain mh")
+        D = product(C_k ^ y_k) / K ^ SK_y
+
+        Check:
+            D == e(g,g) ^ <x,y>
+        """
+        if not isinstance(x, (list, tuple)):
+            raise TypeError("x must be a list or tuple")
 
         if not isinstance(y, (list, tuple)):
             raise TypeError("y must be a list or tuple")
 
+        if len(x) != self.universe_size:
+            raise ValueError("x length must equal universe_size")
+
         if len(y) != self.universe_size:
-            raise ValueError(
-                "y length must equal universe_size"
-            )
+            raise ValueError("y length must equal universe_size")
 
         if "ck" not in ciphertext:
             raise ValueError("ciphertext does not contain ck")
@@ -469,49 +438,23 @@ class AVHODBAC(ABEnc):
         if "K" not in ciphertext:
             raise ValueError("ciphertext does not contain K")
 
-        if "data_vector" not in ciphertext:
-            raise ValueError("ciphertext does not contain data_vector")
-
         if "base_pairing" not in ciphertext:
             raise ValueError("ciphertext does not contain base_pairing")
 
-        x = ciphertext["data_vector"]
-
-        if len(x) != self.universe_size:
-            raise ValueError(
-                "data_vector length must equal universe_size"
-            )
-
-        blind = local_secret["tau"] * local_secret["delta"]
-        session_element = partial_ciphertext["mh"] ** (1 / blind)
-
-        aes_key = self._derive_symmetric_key(session_element)
-
-        try:
-            recovered_x_bytes = AESGCM(aes_key).decrypt(
-                ciphertext["nonce"],
-                ciphertext["payload"],
-                ciphertext["associated_data"],
-            )
-        except InvalidTag:
-            return None
-
-        # ----------------------------------------------------------
-        # Part 3:
-        # D = product(C_k ^ y_k) / K ^ SK_y
-        # Check D == e(g,g) ^ <x,y>
-        # ----------------------------------------------------------
-
-        ck_values = ciphertext["ck"]
-
+        # Every C_k must exist.
         for k in range(1, self.universe_size + 1):
-            if k not in ck_values:
+            if k not in ciphertext["ck"]:
                 raise ValueError(
                     "ciphertext missing C_k for attribute {}".format(k)
                 )
 
-        first_ck = ck_values[1]
-        numerator = first_ck ** 0
+        # ----------------------------------------------------
+        # D = product(C_k ^ y_k) / K ^ SK_y
+        # ----------------------------------------------------
+        ck_values = ciphertext["ck"]
+
+        # Identity element of G_T.
+        numerator = ck_values[1] ** 0
 
         for k in range(1, self.universe_size + 1):
             y_k = self.group.init(ZR, y[k - 1])
@@ -520,6 +463,9 @@ class AVHODBAC(ABEnc):
         denominator = ciphertext["K"] ** sk_y
         D = numerator / denominator
 
+        # ----------------------------------------------------
+        # Compute <x,y>
+        # ----------------------------------------------------
         inner_product = self.group.init(ZR, 0)
 
         for k in range(1, self.universe_size + 1):
@@ -527,21 +473,14 @@ class AVHODBAC(ABEnc):
             y_k = self.group.init(ZR, y[k - 1])
             inner_product += x_k * y_k
 
+        # Expected value:
+        # e(g,g) ^ <x,y>
         expected_D = ciphertext["base_pairing"] ** inner_product
 
-        if D != expected_D:
-            return None
-
-        # Confirm that the protected payload is actually x.
-        try:
-            recovered_x = json.loads(
-                recovered_x_bytes.decode("utf-8")
-            )
-        except (ValueError, UnicodeDecodeError):
-            return None
-
-        if recovered_x != list(x):
-            return None
-
-        return recovered_x
+        return {
+            "D": D,
+            "expected_D": expected_D,
+            "inner_product": inner_product,
+            "verified": D == expected_D,
+        }
 

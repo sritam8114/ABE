@@ -103,8 +103,7 @@ def main():
     # ------------------------------------------------------------
     print("\n[6] ENCRYPTION")
 
-    ciphertext = scheme.encrypt(
-        pk,
+    ciphertext = scheme.encrypt(pk, msk,
         sender,
         sender_policy,
         x,
@@ -149,35 +148,27 @@ def main():
     print("Partial ciphertext generated")
 
     # ------------------------------------------------------------
-    # 9. Final decryption + D verification
+    # 9. X.Y computation and D verification
     # ------------------------------------------------------------
-    print("\n[9] FINAL DECRYPTION")
+    print("\n[9] X.Y COMPUTATION AND VERIFICATION")
 
-    recovered_x = scheme.final_decrypt(
+    result = scheme.compute_D(
         ciphertext,
-        partial_ciphertext,
-        local_secret,
         sk_y,
+        x,
         y,
     )
 
-    if recovered_x is None:
-        print("Decryption: FAILED")
-        return
+    print()
+    print("X =", x)
+    print("Y =", y)
+    print("X.Y =", result["inner_product"])
+    print("D verification =", result["verified"])
 
-    print("D verification: SUCCESS")
-    print("Decryption: SUCCESS")
 
-    print("\nOriginal x :", x)
-    print("Recovered x:", recovered_x)
-    print("x == recovered x:", x == recovered_x)
+
 
     # ------------------------------------------------------------
-    # 10. Application-level display
-    # ------------------------------------------------------------
-    print("\n[10] APPLICATION-LEVEL EXAMPLE")
-    print('Input text:    "Confidential IoT sensor data"')
-    print('Recovered text:"Confidential IoT sensor data"')
 
     print("\nNote: the cryptographic payload demonstrated above is x.")
     print("The text shown here is an application-level demonstration label.")

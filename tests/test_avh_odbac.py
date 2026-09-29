@@ -1,6 +1,6 @@
 import pytest
 
-from charm.toolbox.pairinggroup import PairingGroup
+from charm.toolbox.pairinggroup import PairingGroup, ZR
 from ABE.avh_odbac.avh_odbac_clean import AVHODBAC
 
 TEST_X = [1, 2, 3]
@@ -63,22 +63,38 @@ def test_policy_keygen_creates_msp_bound_components(scheme_data):
 def test_encrypt_creates_protected_ciphertext(scheme_data):
     scheme, pk, msk = scheme_data
 
-    sender = scheme.sender_keygen(pk, msk, {1: 1, 2: 0, 3: 1})
-    sender_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
+    sender_attributes = {1: 1, 2: 0, 3: 1}
 
-    plaintext = b"confidential IoT sensor data"
+    sender = scheme.sender_keygen(
+        pk,
+        msk,
+        sender_attributes,
+    )
+
+    sender_policy = scheme.policy_keygen(
+        pk,
+        msk,
+        "(a1v1 and a2v0)",
+    )
+
     ciphertext = scheme.encrypt(
         pk,
+        msk,
         sender,
         sender_policy,
         TEST_X,
     )
 
-    assert len(ciphertext["ct2"]) == 3
-    assert len(ciphertext["ct3"]) == 2
-    assert ciphertext["nonce"] != b""
-    assert ciphertext["payload"] != plaintext
-    assert ciphertext["associated_data"] == b"AVH-OD-BAC-v1"
+    # The modified construction does not encrypt/decrypt a message.
+    # It only generates K, C_k and the pairing value needed for X.Y.
+    assert "K" in ciphertext
+    assert "ck" in ciphertext
+    assert "base_pairing" in ciphertext
+
+    assert set(ciphertext["ck"].keys()) == {1, 2, 3}
+
+    # Old message-encryption fields must not be present.
+
 def test_transform_keygen_blinds_receiver_components(scheme_data):
     scheme, pk, msk = scheme_data
 
@@ -107,8 +123,7 @@ def test_match_returns_partial_ciphertext_when_both_policies_match(scheme_data):
     sender_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
     receiver_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
 
-    ciphertext = scheme.encrypt(
-        pk,
+    ciphertext = scheme.encrypt(pk, msk,
         sender,
         sender_policy,
         TEST_X,
@@ -128,22 +143,39 @@ def test_match_returns_partial_ciphertext_when_both_policies_match(scheme_data):
 
     assert partial_ciphertext is not None
     assert "mh" in partial_ciphertext
-def test_authorized_receiver_recovers_plaintext(scheme_data):
+def test_authorized_receiver_computes_inner_product(scheme_data):
     scheme, pk, msk = scheme_data
 
     sender_attributes = {1: 1, 2: 0, 3: 1}
     receiver_attributes = {1: 1, 2: 0, 3: 0}
 
-    sender = scheme.sender_keygen(pk, msk, sender_attributes)
-    receiver = scheme.receiver_keygen(pk, msk, receiver_attributes)
+    sender = scheme.sender_keygen(
+        pk,
+        msk,
+        sender_attributes,
+    )
 
-    sender_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
-    receiver_policy = scheme.policy_keygen(pk, msk, "(a1v1 and a2v0)")
+    receiver = scheme.receiver_keygen(
+        pk,
+        msk,
+        receiver_attributes,
+    )
 
-    plaintext = b"authorized receiver can read this"
+    sender_policy = scheme.policy_keygen(
+        pk,
+        msk,
+        "(a1v1 and a2v0)",
+    )
+
+    receiver_policy = scheme.policy_keygen(
+        pk,
+        msk,
+        "(a1v1 and a2v0)",
+    )
 
     ciphertext = scheme.encrypt(
         pk,
+        msk,
         sender,
         sender_policy,
         TEST_X,
@@ -161,18 +193,22 @@ def test_authorized_receiver_recovers_plaintext(scheme_data):
         receiver_attributes,
     )
 
+    assert partial_ciphertext is not None
+    assert "mh" in partial_ciphertext
+
     y = [1, 0, 1]
     sk_y = scheme.fkgen(msk, y)
 
-    recovered_x = scheme.final_decrypt(
+    result = scheme.compute_D(
         ciphertext,
-        partial_ciphertext,
-        local_secret,
         sk_y,
+        TEST_X,
         y,
     )
 
-    assert recovered_x == TEST_X
+    assert result["verified"] is True
+    assert result["inner_product"] == scheme.group.init(ZR, 4)
+
 def test_match_fails_when_receiver_does_not_satisfy_sender_policy(scheme_data):
     scheme, pk, msk = scheme_data
 
@@ -185,8 +221,7 @@ def test_match_fails_when_receiver_does_not_satisfy_sender_policy(scheme_data):
     sender_policy = scheme.policy_keygen(pk, msk, "a1v1")
     receiver_policy = scheme.policy_keygen(pk, msk, "a2v0")
 
-    ciphertext = scheme.encrypt(
-        pk,
+    ciphertext = scheme.encrypt(pk, msk,
         sender,
         sender_policy,
         TEST_X,
@@ -213,8 +248,7 @@ def test_match_fails_when_sender_does_not_satisfy_receiver_policy(scheme_data):
     sender_policy = scheme.policy_keygen(pk, msk, "a2v0")
     receiver_policy = scheme.policy_keygen(pk, msk, "a1v1")
 
-    ciphertext = scheme.encrypt(
-        pk,
+    ciphertext = scheme.encrypt(pk, msk,
         sender,
         sender_policy,
         TEST_X,

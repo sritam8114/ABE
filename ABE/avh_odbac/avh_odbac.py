@@ -293,95 +293,6 @@ class AVHODBAC(ABEnc):
         }
 
         return trapdoor, local_secret
-    def _attribute_labels(self, attributes):
-        self._validate_attributes(attributes)
-
-        return [
-            "a{}v{}".format(index, value).upper()
-            for index, value in attributes.items()
-        ]
-    def _msp_reconstruction_coefficients(self, msp, nodes):
-        literals = [node.getAttributeAndIndex() for node in nodes]
-        width = max(len(msp[literal]) for literal in literals)
-        variable_count = len(literals)
-
-        zero = self.group.init(ZR, 0)
-        one = self.group.init(ZR, 1)
-
-        augmented = []
-
-        for equation in range(width):
-            row = []
-
-            for literal in literals:
-                msp_row = msp[literal]
-                value = msp_row[equation] if equation < len(msp_row) else 0
-                row.append(self.group.init(ZR, value))
-
-            row.append(one if equation == 0 else zero)
-            augmented.append(row)
-
-        pivot_row = 0
-        pivot_columns = []
-
-        for column in range(variable_count):
-            pivot = None
-
-            for row in range(pivot_row, width):
-                if augmented[row][column] != zero:
-                    pivot = row
-                    break
-
-            if pivot is None:
-                continue
-
-            augmented[pivot_row], augmented[pivot] = (
-                augmented[pivot],
-                augmented[pivot_row],
-            )
-
-            inverse = one / augmented[pivot_row][column]
-            augmented[pivot_row] = [
-                value * inverse for value in augmented[pivot_row]
-            ]
-
-            for row in range(width):
-                if row == pivot_row:
-                    continue
-
-                factor = augmented[row][column]
-
-                if factor != zero:
-                    augmented[row] = [
-                        augmented[row][item] -
-                        factor * augmented[pivot_row][item]
-                        for item in range(variable_count + 1)
-                    ]
-
-            pivot_columns.append(column)
-            pivot_row += 1
-
-            if pivot_row == width:
-                break
-
-        for row in range(pivot_row, width):
-            if all(
-                augmented[row][column] == zero
-                for column in range(variable_count)
-            ) and augmented[row][-1] != zero:
-                raise ValueError("selected MSP rows cannot reconstruct the secret")
-
-        solution = [zero for _ in range(variable_count)]
-
-        for row, column in enumerate(pivot_columns):
-            solution[column] = augmented[row][-1]
-
-        return {
-            literal: solution[index]
-            for index, literal in enumerate(literals)
-        }
-
-
     def match(
         self,
         ciphertext,
@@ -407,8 +318,18 @@ class AVHODBAC(ABEnc):
         sender_attributes and receiver_attributes are visible to the cloud in
         this version. Replace this interface before claiming attribute privacy.
         """
-        sender_labels = self._attribute_labels(sender_attributes)
-        receiver_labels = self._attribute_labels(receiver_attributes)
+        self._validate_attributes(sender_attributes)
+        self._validate_attributes(receiver_attributes)
+
+        sender_labels = [
+            "A{}V{}".format(index, value)
+            for index, value in sender_attributes.items()
+        ]
+
+        receiver_labels = [
+            "A{}V{}".format(index, value)
+            for index, value in receiver_attributes.items()
+        ]
 
         sender_nodes = self.util.prune(
             ciphertext["sender_policy"],
@@ -423,14 +344,137 @@ class AVHODBAC(ABEnc):
         if not sender_nodes or not receiver_nodes:
             return None
 
-        sender_coefficients = self._msp_reconstruction_coefficients(
-            ciphertext["sender_msp"],
-            sender_nodes,
+        reconstruction_coefficients = {}
+
+        for name, msp, nodes in (
+            ("sender", ciphertext["sender_msp"], sender_nodes),
+            ("receiver", trapdoor["receiver_msp"], receiver_nodes),
+        ):
+            literals = [
+                node.getAttributeAndIndex()
+                for node in nodes
+            ]
+
+            width = max(
+                len(msp[literal])
+                for literal in literals
+            )
+
+            variable_count = len(literals)
+
+            zero = self.group.init(ZR, 0)
+            one = self.group.init(ZR, 1)
+
+            augmented = []
+
+            for equation in range(width):
+                row = []
+
+                for literal in literals:
+                    msp_row = msp[literal]
+
+                    value = (
+                        msp_row[equation]
+                        if equation < len(msp_row)
+                        else 0
+                    )
+
+                    row.append(
+                        self.group.init(ZR, value)
+                    )
+
+                row.append(
+                    one if equation == 0 else zero
+                )
+
+                augmented.append(row)
+
+            pivot_row = 0
+            pivot_columns = []
+
+            for column in range(variable_count):
+                pivot = None
+
+                for row in range(
+                    pivot_row,
+                    width,
+                ):
+                    if augmented[row][column] != zero:
+                        pivot = row
+                        break
+
+                if pivot is None:
+                    continue
+
+                augmented[pivot_row], augmented[pivot] = (
+                    augmented[pivot],
+                    augmented[pivot_row],
+                )
+
+                inverse = (
+                    one
+                    / augmented[pivot_row][column]
+                )
+
+                augmented[pivot_row] = [
+                    value * inverse
+                    for value in augmented[pivot_row]
+                ]
+
+                for row in range(width):
+                    if row == pivot_row:
+                        continue
+
+                    factor = augmented[row][column]
+
+                    if factor != zero:
+                        augmented[row] = [
+                            augmented[row][item]
+                            - factor * augmented[pivot_row][item]
+                            for item in range(
+                                variable_count + 1
+                            )
+                        ]
+
+                pivot_columns.append(column)
+                pivot_row += 1
+
+                if pivot_row == width:
+                    break
+
+            for row in range(
+                pivot_row,
+                width,
+            ):
+                if all(
+                    augmented[row][column] == zero
+                    for column in range(variable_count)
+                ) and augmented[row][-1] != zero:
+                    raise ValueError(
+                        "selected MSP rows cannot reconstruct the secret"
+                    )
+
+            solution = [
+                zero
+                for _ in range(variable_count)
+            ]
+
+            for row, column in enumerate(
+                pivot_columns
+            ):
+                solution[column] = augmented[row][-1]
+
+            reconstruction_coefficients[name] = {
+                literal: solution[index]
+                for index, literal in enumerate(literals)
+            }
+
+        sender_coefficients = (
+            reconstruction_coefficients["sender"]
         )
 
-        receiver_coefficients = self._msp_reconstruction_coefficients(
-            trapdoor["receiver_msp"],
-            receiver_nodes,
+        receiver_coefficients = (
+            reconstruction_coefficients["receiver"]
         )
 
         mh = 1

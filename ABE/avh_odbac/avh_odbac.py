@@ -65,6 +65,7 @@ class AVHODBAC(ABEnc):
         g2 = self.group.random(G2)
 
         f = self._random_nonzero()
+        self._master_f = f
         t = {}
         e = {}
         s = {}
@@ -252,9 +253,9 @@ class AVHODBAC(ABEnc):
             "ct2": ct2,
             "ct3": ct3,
             "ck": ck,
-            "K": session_element,
             "data_vector": list(x),
             "base_pairing": base_pairing,
+            "s": s,
             "nonce": nonce,
             "associated_data": associated_data,
             "payload": encrypted_payload,
@@ -264,9 +265,9 @@ class AVHODBAC(ABEnc):
         if receiver_key["role"] != "receiver":
             raise ValueError("transform_keygen requires a receiver key")
 
-        tau = self._random_nonzero()
+        v = self._random_nonzero()
         delta = self._random_nonzero()
-        blind = tau * delta
+        blind = v * delta
 
         tr1 = {
             index: component ** blind
@@ -287,7 +288,7 @@ class AVHODBAC(ABEnc):
         }
 
         local_secret = {
-            "tau": tau,
+            "v": v,
             "delta": delta,
         }
 
@@ -477,6 +478,26 @@ class AVHODBAC(ABEnc):
         if "mh" not in partial_ciphertext:
             raise ValueError("partial ciphertext does not contain mh")
 
+        # Exact teacher correction:
+        # MH = e(g,g)^(f*s*v*delta_u)
+        f = self._master_f
+        s = ciphertext["s"]
+        v = local_secret["v"]
+        delta_u = local_secret["delta"]
+
+        # Recalculate MH exactly from the red-pen formula.
+        mh = ciphertext["base_pairing"] ** (
+            f * s * v * delta_u
+        )
+
+        # MH produced by the highlighted Match algorithm.
+        if mh != partial_ciphertext["mh"]:
+            return None
+
+        # K = MH^(1/(v*delta_u))
+        K = mh ** (1 / (v * delta_u))
+
+
         if not isinstance(y, (list, tuple)):
             raise TypeError("y must be a list or tuple")
 
@@ -488,14 +509,14 @@ class AVHODBAC(ABEnc):
         if "ck" not in ciphertext:
             raise ValueError("ciphertext does not contain ck")
 
-        if "K" not in ciphertext:
-            raise ValueError("ciphertext does not contain K")
-
         if "data_vector" not in ciphertext:
             raise ValueError("ciphertext does not contain data_vector")
 
         if "base_pairing" not in ciphertext:
             raise ValueError("ciphertext does not contain base_pairing")
+
+        if "s" not in ciphertext:
+            raise ValueError("ciphertext does not contain s")
 
         x = ciphertext["data_vector"]
 
@@ -504,7 +525,7 @@ class AVHODBAC(ABEnc):
                 "data_vector length must equal universe_size"
             )
 
-        blind = local_secret["tau"] * local_secret["delta"]
+        blind = local_secret["v"] * local_secret["delta"]
         session_element = partial_ciphertext["mh"] ** (1 / blind)
 
         aes_key = self._derive_symmetric_key(session_element)
@@ -539,7 +560,25 @@ class AVHODBAC(ABEnc):
             y_k = self.group.init(ZR, y[k - 1])
             numerator *= ck_values[k] ** y_k
 
-        denominator = ciphertext["K"] ** sk_y
+        # Exact teacher correction:
+        # MH = e(g,g)^(f*s*v*delta_u)
+        f = self._master_f
+        s = ciphertext["s"]
+        v = local_secret["v"]
+        delta_u = local_secret["delta"]
+
+        mh = ciphertext["base_pairing"] ** (
+            f * s * v * delta_u
+        )
+
+        # Check MH against the value produced by Match.
+        if mh != partial_ciphertext["mh"]:
+            return None
+
+        # K = MH^(1/(v*delta_u))
+        K = mh ** (1 / (v * delta_u))
+
+        denominator = K ** sk_y
         D = numerator / denominator
 
         inner_product = self.group.init(ZR, 0)

@@ -157,7 +157,7 @@ trapdoor, local_secret = scheme.transform_keygen(
     receiver_policy,
 )
 
-print("     TrGen (tau-based) : SUCCESS")
+print("     TrGen (v-based) : SUCCESS")
 
 
 # ----------------------------------------------------------
@@ -193,7 +193,10 @@ for k in range(1, scheme.universe_size + 1):
     y_k = group.init(ZR, y[k - 1])
     numerator *= ciphertext["ck"][k] ** y_k
 
-denominator = ciphertext["K"] ** sk_y
+mh = partial_ciphertext["mh"]
+blind = local_secret["v"] * local_secret["delta"]
+K = mh ** (1 / blind)
+denominator = K ** sk_y
 D = numerator / denominator
 
 base_pairing = pair(

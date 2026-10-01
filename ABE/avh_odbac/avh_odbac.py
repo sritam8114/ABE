@@ -1,22 +1,11 @@
-import json
 from charm.toolbox.pairinggroup import ZR, G1, G2, pair
 from charm.toolbox.ABEnc import ABEnc
 from ..msp import MSP
-import hashlib
-import os
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.exceptions import InvalidTag
 
 
 
 
 class AVHODBAC(ABEnc):
-    def _user_token(self, user_id):
-        return self.group.serialize(user_id)
-
-    def revoke(self, revoked_user_ids, user_id):
-        revoked_user_ids.add(self._user_token(user_id))
-
     def __init__(self, group_obj, universe_size, verbose=False):
         ABEnc.__init__(self)
         self.group = group_obj
@@ -98,20 +87,16 @@ class AVHODBAC(ABEnc):
         self._validate_attributes(attributes)
         mu = self._random_nonzero()
         components = {}
-        sk_values = {}
-
         for i, value in attributes.items():
             denominator = msk["t"][i] if value == 1 else msk["e"][i]
             sk_i = mu / denominator
             components[i] = pk["g2"] ** sk_i
-            sk_values[i] = sk_i
 
         return {
             "role": "sender",
             "user_id": mu,
             "attributes": dict(attributes),
             "K": components,
-            "sk_values": sk_values,
         }
 
     def receiver_keygen(self, pk, msk, attributes):
@@ -158,11 +143,6 @@ class AVHODBAC(ABEnc):
             "width": width,
             "components": components,
         }
-    def _derive_symmetric_key(self, pairing_element):
-        
-        serialized = self.group.serialize(pairing_element)
-        return hashlib.sha256(serialized).digest()
-
     def fkgen(self, msk, y):
         if not isinstance(y, (list, tuple)):
             raise TypeError("y must be a list or tuple")
@@ -196,28 +176,6 @@ class AVHODBAC(ABEnc):
         beta = self._random_nonzero()
         s = alpha + beta
 
-        session_element = (
-            pair(pk["F"], pk["g2"] ** alpha)
-            * pair(pk["F"], pk["g2"] ** beta)
-        )
-
-        aes_key = self._derive_symmetric_key(session_element)
-        nonce = os.urandom(12)
-        associated_data = b"AVH-OD-BAC-v1"
-
-        # The paper-level encryption input is now x.
-        # We serialize x so it can be protected by AES-GCM.
-        x_payload = json.dumps(
-            list(x),
-            separators=(",", ":"),
-        ).encode("utf-8")
-
-        encrypted_payload = AESGCM(aes_key).encrypt(
-            nonce,
-            x_payload,
-            associated_data,
-        )
-
         ct2 = {
             index: component ** beta
             for index, component in sender_key["K"].items()
@@ -225,41 +183,36 @@ class AVHODBAC(ABEnc):
 
         ct3 = {
             literal: component ** alpha
-            for literal, component in sender_policy_key["components"].items()
+            for literal, component
+            in sender_policy_key["components"].items()
         }
 
         base_pairing = pair(pk["g1"], pk["g2"])
         g2_s = pk["g2"] ** s
         ck = {}
 
-        for k in sender_key["attributes"]:
-            if k not in pk["H"]:
-                raise ValueError(
-                    "missing H component for attribute {}".format(k)
-                )
-
+        for k in range(1, self.universe_size + 1):
             x_k = self.group.init(ZR, x[k - 1])
             h_k = pk["H"][k]
 
+            # C_k = e(g,g)^(s*s_k) * e(g,g)^(x_k)
             ck[k] = (
                 pair(h_k, g2_s)
                 * (base_pairing ** x_k)
             )
 
-        return {
+        ciphertext = {
             "sender_id": sender_key["user_id"],
             "sender_policy": sender_policy_key["policy"],
             "sender_msp": sender_policy_key["msp"],
             "ct2": ct2,
             "ct3": ct3,
             "ck": ck,
-            "data_vector": list(x),
             "base_pairing": base_pairing,
             "s": s,
-            "nonce": nonce,
-            "associated_data": associated_data,
-            "payload": encrypted_payload,
         }
+
+        return ciphertext, s
 
     def transform_keygen(self, receiver_key, receiver_policy_key):
         if receiver_key["role"] != "receiver":
@@ -299,19 +252,9 @@ class AVHODBAC(ABEnc):
         trapdoor,
         sender_attributes,
         receiver_attributes,
-    revoked_user_ids=None,
 
     ):
 
-        if revoked_user_ids is not None:
-            sender_token = self._user_token(ciphertext["sender_id"])
-            receiver_token = self._user_token(trapdoor["receiver_id"])
-
-            if (
-                sender_token in revoked_user_ids
-                or receiver_token in revoked_user_ids
-            ):
-                return None
         """
         Research-prototype cloud match.
 
@@ -514,219 +457,138 @@ class AVHODBAC(ABEnc):
         partial_ciphertext,
         local_secret,
         sk_y,
+        x,
         y,
+        s,
     ):
+        """
+        Final receiver-side verification.
+
+        Teacher correction:
+
+            MH = e(g,g)^(f*s*v*delta_u)
+
+            K = MH^(1/(v*delta_u))
+
+            D = product(C_k^y_k) / K^SK_y
+
+            D = e(g,g)^<x,y>
+        """
+
         if partial_ciphertext is None:
             return None
 
         if "mh" not in partial_ciphertext:
             raise ValueError("partial ciphertext does not contain mh")
 
-        # Exact teacher correction:
-        # MH = e(g,g)^(f*s*v*delta_u)
-        f = self._master_f
-        s = ciphertext["s"]
-        v = local_secret["v"]
-        delta_u = local_secret["delta"]
+        if "ck" not in ciphertext:
+            raise ValueError("ciphertext does not contain ck")
 
-        # Recalculate MH exactly from the red-pen formula.
-        mh = ciphertext["base_pairing"] ** (
-            f * s * v * delta_u
-        )
+        if "base_pairing" not in ciphertext:
+            raise ValueError("ciphertext does not contain base_pairing")
 
-        # MH produced by the highlighted Match algorithm.
-        if mh != partial_ciphertext["mh"]:
-            return None
+        if s is None:
+            raise ValueError("s is required for final verification")
 
-        # K = MH^(1/(v*delta_u))
-        K = mh ** (1 / (v * delta_u))
-
+        if not isinstance(x, (list, tuple)):
+            raise TypeError("x must be a list or tuple")
 
         if not isinstance(y, (list, tuple)):
             raise TypeError("y must be a list or tuple")
+
+        if len(x) != self.universe_size:
+            raise ValueError(
+                "x length must equal universe_size"
+            )
 
         if len(y) != self.universe_size:
             raise ValueError(
                 "y length must equal universe_size"
             )
 
-        if "ck" not in ciphertext:
-            raise ValueError("ciphertext does not contain ck")
+        # ----------------------------------------------------------
+        # 1. Recalculate MH exactly from the teacher's formula
+        # ----------------------------------------------------------
 
-        if "data_vector" not in ciphertext:
-            raise ValueError("ciphertext does not contain data_vector")
+        f = self._master_f
+        # s is supplied separately by Encryption.
+        v = local_secret["v"]
+        delta_u = local_secret["delta"]
 
-        if "base_pairing" not in ciphertext:
-            raise ValueError("ciphertext does not contain base_pairing")
+        calculated_mh = ciphertext["base_pairing"] ** (
+            f * s * v * delta_u
+        )
 
-        if "s" not in ciphertext:
-            raise ValueError("ciphertext does not contain s")
-
-        x = ciphertext["data_vector"]
-
-        if len(x) != self.universe_size:
-            raise ValueError(
-                "data_vector length must equal universe_size"
-            )
-
-        blind = local_secret["v"] * local_secret["delta"]
-        session_element = partial_ciphertext["mh"] ** (1 / blind)
-
-        aes_key = self._derive_symmetric_key(session_element)
-
-        try:
-            recovered_x_bytes = AESGCM(aes_key).decrypt(
-                ciphertext["nonce"],
-                ciphertext["payload"],
-                ciphertext["associated_data"],
-            )
-        except InvalidTag:
+        if calculated_mh != partial_ciphertext["mh"]:
+            print("    MH formula check      : FAILED")
             return None
 
+        print("    MH formula check      : SUCCESS")
+
         # ----------------------------------------------------------
-        # Part 3:
-        # D = product(C_k ^ y_k) / K ^ SK_y
-        # Check D == e(g,g) ^ <x,y>
+        # 2. Recover K from MH
         # ----------------------------------------------------------
 
-        ck_values = ciphertext["ck"]
+        K = calculated_mh ** (
+            1 / (v * delta_u)
+        )
+
+        print("    K reconstruction      : SUCCESS")
+
+        # ----------------------------------------------------------
+        # 3. Compute numerator = product(C_k ^ y_k)
+        # ----------------------------------------------------------
+
+        numerator = ciphertext["base_pairing"] ** self.group.init(
+            ZR, 0
+        )
 
         for k in range(1, self.universe_size + 1):
-            if k not in ck_values:
+            if k not in ciphertext["ck"]:
                 raise ValueError(
                     "ciphertext missing C_k for attribute {}".format(k)
                 )
 
-        first_ck = ck_values[1]
-        numerator = first_ck ** 0
-
-        for k in range(1, self.universe_size + 1):
             y_k = self.group.init(ZR, y[k - 1])
-            numerator *= ck_values[k] ** y_k
+            numerator *= ciphertext["ck"][k] ** y_k
 
-        # Exact teacher correction:
-        # MH = e(g,g)^(f*s*v*delta_u)
-        f = self._master_f
-        s = ciphertext["s"]
-        v = local_secret["v"]
-        delta_u = local_secret["delta"]
-
-        mh = ciphertext["base_pairing"] ** (
-            f * s * v * delta_u
-        )
-
-        # Check MH against the value produced by Match.
-        if mh != partial_ciphertext["mh"]:
-            return None
-
-        # K = MH^(1/(v*delta_u))
-        K = mh ** (1 / (v * delta_u))
+        # ----------------------------------------------------------
+        # 4. Compute denominator = K ^ SK_y
+        # ----------------------------------------------------------
 
         denominator = K ** sk_y
+
+        # ----------------------------------------------------------
+        # 5. Compute D
+        # ----------------------------------------------------------
+
         D = numerator / denominator
+
+        # ----------------------------------------------------------
+        # 6. Compute <x,y>
+        # ----------------------------------------------------------
 
         inner_product = self.group.init(ZR, 0)
 
         for k in range(1, self.universe_size + 1):
             x_k = self.group.init(ZR, x[k - 1])
             y_k = self.group.init(ZR, y[k - 1])
+
             inner_product += x_k * y_k
+
+        # ----------------------------------------------------------
+        # 7. Expected D
+        # ----------------------------------------------------------
 
         expected_D = ciphertext["base_pairing"] ** inner_product
 
         if D != expected_D:
+            print("    D verification        : FAILED")
+            print("    <x,y>                 :", inner_product)
             return None
 
-        # Confirm that the protected payload is actually x.
-        try:
-            recovered_x = json.loads(
-                recovered_x_bytes.decode("utf-8")
-            )
-        except (ValueError, UnicodeDecodeError):
-            return None
+        print("    D verification        : SUCCESS")
+        print("    <x,y>                 :", inner_product)
 
-        if recovered_x != list(x):
-            return None
+        return inner_product
 
-        return recovered_x
-
-    def _build_opaque_policy(self, policy_spec, prefix, state):
-        if "index" in policy_spec and "value" in policy_spec:
-            index = policy_spec["index"]
-            value = policy_spec["value"]
-
-            if index not in range(1, self.universe_size + 1):
-                raise ValueError("policy attribute index is outside the universe")
-
-            if value not in (0, 1):
-                raise ValueError("policy attribute value must be 0 or 1")
-
-            row_id = "{}{}".format(prefix, state["next_row"])
-            state["next_row"] += 1
-            state["row_values"][row_id] = (index, value)
-
-            return row_id
-
-        if "and" in policy_spec:
-            left, right = policy_spec["and"]
-
-            return "({} and {})".format(
-                self._build_opaque_policy(left, prefix, state),
-                self._build_opaque_policy(right, prefix, state),
-            )
-
-        if "or" in policy_spec:
-            left, right = policy_spec["or"]
-
-            return "({} or {})".format(
-                self._build_opaque_policy(left, prefix, state),
-                self._build_opaque_policy(right, prefix, state),
-            )
-
-        raise ValueError("invalid structured policy")
-
-    def policy_keygen_hidden(self, pk, msk, policy_spec, prefix):
-        state = {
-            "next_row": 0,
-            "row_values": {},
-        }
-
-        opaque_policy_str = self._build_opaque_policy(
-            policy_spec,
-            prefix,
-            state,
-        )
-
-        opaque_policy = self.util.createPolicy(opaque_policy_str)
-        opaque_msp = self.util.convert_policy_to_msp(opaque_policy)
-        width = self.util.len_longest_row
-
-        sharing_vector = [msk["f"]]
-        for _ in range(1, width):
-            sharing_vector.append(self.group.random(ZR))
-
-        components = {}
-        row_to_index = {}
-
-        for literal, row in opaque_msp.items():
-            opaque_row_id = literal.lower()
-            index, value = state["row_values"][opaque_row_id]
-
-            lambda_value = self.group.init(ZR, 0)
-
-            for column, coefficient in enumerate(row):
-                lambda_value += coefficient * sharing_vector[column]
-
-            factor = msk["t"][index] if value == 1 else msk["e"][index]
-
-            components[literal] = pk["g1"] ** (lambda_value * factor)
-            row_to_index[literal] = index
-
-        return {
-            "components": components,
-            "cloud_policy": {
-                "opaque_policy": opaque_policy,
-                "opaque_msp": opaque_msp,
-                "row_to_index": row_to_index,
-            },
-        }

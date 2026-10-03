@@ -9,7 +9,7 @@ def main():
     print("=" * 60)
 
     group = PairingGroup("MNT224")
-    scheme = AVHODBAC(group, universe_size=3)
+    scheme = AVHODBAC(group, universe_size=3, B=10)
 
     print("\n[1] Setup")
     pk, msk = scheme.setup()

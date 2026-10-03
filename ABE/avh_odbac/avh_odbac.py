@@ -6,10 +6,15 @@ from ..msp import MSP
 
 
 class AVHODBAC(ABEnc):
-    def __init__(self, group_obj, universe_size, verbose=False):
+    def __init__(self, group_obj, universe_size, verbose=False, B=10):
         ABEnc.__init__(self)
         self.group = group_obj
         self.universe_size = universe_size
+
+        if not isinstance(B, int) or B < 0:
+            raise ValueError("B must be a non-negative integer")
+
+        self.B = B
         self.util = MSP(self.group, verbose)
 
     def _random_nonzero(self):
@@ -239,6 +244,14 @@ class AVHODBAC(ABEnc):
         return pk_S, pk_R
 
     def fkgen(self, msk, y):
+        """
+        FKGen(msk, y) -> SK_y
+
+        y = (y_1, y_2, ..., y_n) in [0, B]^n
+
+        SK_y = sum_{k=1}^n (s_k / f) * y_k mod p
+        """
+
         if not isinstance(y, (list, tuple)):
             raise TypeError("y must be a list or tuple")
 
@@ -247,6 +260,18 @@ class AVHODBAC(ABEnc):
                 "y length must equal universe_size"
             )
 
+        # Paper domain:
+        # y = (y_1, ..., y_n) belongs to [0, B]^n
+        for y_k in y:
+            if not isinstance(y_k, int):
+                raise TypeError("each y_k must be an integer")
+
+            if y_k < 0 or y_k > self.B:
+                raise ValueError(
+                    "each y_k must satisfy 0 <= y_k <= B"
+                )
+
+        # SK_y = sum_{k=1}^n (s_k/f) * y_k mod p
         sk_y = self.group.init(ZR, 0)
 
         for k in range(1, self.universe_size + 1):

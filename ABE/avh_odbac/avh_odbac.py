@@ -115,34 +115,129 @@ class AVHODBAC(ABEnc):
             "K": components,
         }
 
-    def policy_keygen(self, pk, msk, policy_str):
-        policy = self.util.createPolicy(policy_str)
-        msp = self.util.convert_policy_to_msp(policy)
-        width = self.util.len_longest_row
+    def policy_keygen(self, pk, msk, sender_policy_str, receiver_policy_str):
+        """
+        PolKeyGen(msk, S, R) -> (pk_S, pk_R)
 
-        sharing_vector = [msk["f"]]
-        for _ in range(1, width):
-            sharing_vector.append(self.group.random(ZR))
+        Sender:
+            S = (M1, rho1)
+            v_S = (f, xi_S,2, ..., xi_S,n1)^T
+            lambda_S,j = M1,j . v_S
 
-        components = {}
+            If v = 1:
+                pk_S,j = g^(lambda_S,j * t_i)
 
-        for literal, row in msp.items():
-            lambda_value = self.group.init(ZR, 0)
+            If v = 0:
+                pk_S,j = g^(lambda_S,j * e_i)
+
+        Receiver:
+            R = (M2, rho2)
+            v_R = (f, xi_R,2, ..., xi_R,n2)^T
+            lambda_R,j = M2,j . v_R
+
+            If v = 1:
+                pk_R,j = g^(lambda_R,j * t_i)
+
+            If v = 0:
+                pk_R,j = g^(lambda_R,j * e_i)
+        """
+
+        # ==========================================================
+        # Sender policy: S = (M1, rho1)
+        # ==========================================================
+
+        sender_policy = self.util.createPolicy(sender_policy_str)
+        sender_msp = self.util.convert_policy_to_msp(sender_policy)
+        sender_width = self.util.len_longest_row
+
+        # v_S = (f, xi_S,2, ..., xi_S,n1)^T
+        sender_vector = [msk["f"]]
+
+        for _ in range(1, sender_width):
+            sender_vector.append(self.group.random(ZR))
+
+        sender_components = {}
+
+        # lambda_S,j = M1,j . v_S
+        for literal, row in sender_msp.items():
+            lambda_sender = self.group.init(ZR, 0)
 
             for column, coefficient in enumerate(row):
-                lambda_value += coefficient * sharing_vector[column]
+                lambda_sender += coefficient * sender_vector[column]
 
+            # rho1(j) = (i, v)
             index, value = self._parse_policy_literal(literal)
-            factor = msk["t"][index] if value == 1 else msk["e"][index]
-            components[literal] = pk["g1"] ** (lambda_value * factor)
 
-        return {
-            "policy_str": policy_str,
-            "policy": policy,
-            "msp": msp,
-            "width": width,
-            "components": components,
+            # v = 1 -> t_i
+            # v = 0 -> e_i
+            if value == 1:
+                factor = msk["t"][index]
+            else:
+                factor = msk["e"][index]
+
+            # pk_S,j = g^(lambda_S,j * t_i/e_i)
+            sender_components[literal] = (
+                pk["g1"] ** (lambda_sender * factor)
+            )
+
+        pk_S = {
+            "policy_str": sender_policy_str,
+            "policy": sender_policy,
+            "msp": sender_msp,
+            "width": sender_width,
+            "components": sender_components,
         }
+
+        # ==========================================================
+        # Receiver policy: R = (M2, rho2)
+        # ==========================================================
+
+        receiver_policy = self.util.createPolicy(receiver_policy_str)
+        receiver_msp = self.util.convert_policy_to_msp(receiver_policy)
+        receiver_width = self.util.len_longest_row
+
+        # v_R = (f, xi_R,2, ..., xi_R,n2)^T
+        receiver_vector = [msk["f"]]
+
+        for _ in range(1, receiver_width):
+            receiver_vector.append(self.group.random(ZR))
+
+        receiver_components = {}
+
+        # lambda_R,j = M2,j . v_R
+        for literal, row in receiver_msp.items():
+            lambda_receiver = self.group.init(ZR, 0)
+
+            for column, coefficient in enumerate(row):
+                lambda_receiver += coefficient * receiver_vector[column]
+
+            # rho2(j) = (i, v)
+            index, value = self._parse_policy_literal(literal)
+
+            # v = 1 -> t_i
+            # v = 0 -> e_i
+            if value == 1:
+                factor = msk["t"][index]
+            else:
+                factor = msk["e"][index]
+
+            # pk_R,j = g^(lambda_R,j * t_i/e_i)
+            receiver_components[literal] = (
+                pk["g1"] ** (lambda_receiver * factor)
+            )
+
+        pk_R = {
+            "policy_str": receiver_policy_str,
+            "policy": receiver_policy,
+            "msp": receiver_msp,
+            "width": receiver_width,
+            "components": receiver_components,
+        }
+
+        # Paper output:
+        # PolKeyGen(msk, S, R) -> (pk_S, pk_R)
+        return pk_S, pk_R
+
     def fkgen(self, msk, y):
         if not isinstance(y, (list, tuple)):
             raise TypeError("y must be a list or tuple")

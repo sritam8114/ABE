@@ -34,15 +34,10 @@ def main():
     )
     print("    Receiver KeyGen       : SUCCESS")
 
-    sender_policy = scheme.policy_keygen(
+    sender_policy_key, receiver_policy_key = scheme.policy_keygen(
         pk,
         msk,
         "(a1v1 and a2v0)",
-    )
-
-    receiver_policy = scheme.policy_keygen(
-        pk,
-        msk,
         "(a1v1 and a2v0)",
     )
 
@@ -64,7 +59,7 @@ def main():
     ciphertext, s = scheme.encrypt(
         pk,
         sender,
-        sender_policy,
+        sender_policy_key,
         x,
     )
 
@@ -74,7 +69,7 @@ def main():
 
     trapdoor, local_secret = scheme.transform_keygen(
         receiver,
-        receiver_policy,
+        receiver_policy_key,
     )
 
     print("\n[8] TrGen")

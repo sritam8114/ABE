@@ -12,7 +12,7 @@ def main():
     scheme = AVHODBAC(group, universe_size=3, B=10)
 
     print("\n[1] Setup")
-    pk, msk = scheme.setup()
+    mpk, msk = scheme.setup()
     print("    Setup                 : SUCCESS")
 
     sender_attributes = {1: 1, 2: 0, 3: 1}
@@ -20,7 +20,7 @@ def main():
 
     print("\n[2] Sender KeyGen")
     sender = scheme.sender_keygen(
-        pk,
+        mpk,
         msk,
         sender_attributes,
     )
@@ -28,14 +28,14 @@ def main():
 
     print("\n[3] Receiver KeyGen")
     receiver = scheme.receiver_keygen(
-        pk,
+        mpk,
         msk,
         receiver_attributes,
     )
     print("    Receiver KeyGen       : SUCCESS")
 
     sender_policy_key, receiver_policy_key = scheme.policy_keygen(
-        pk,
+        mpk,
         msk,
         "(a1v1 and a2v0)",
         "(a1v1 and a2v0)",
@@ -57,7 +57,7 @@ def main():
     print("    FKGen                 : SUCCESS")
 
     ciphertext, s = scheme.encrypt(
-        pk,
+        mpk,
         sender,
         sender_policy_key,
         x,

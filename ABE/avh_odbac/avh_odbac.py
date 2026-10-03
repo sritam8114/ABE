@@ -69,13 +69,13 @@ class AVHODBAC(ABEnc):
             e[i] = self._random_nonzero()
             s[i] = self._random_nonzero()
 
-        pk = {
+        mpk = {
             "g1": g1,
             "g2": g2,
             "F": g1 ** f,
             "T": {i: g1 ** t[i] for i in t},
             "E": {i: g1 ** e[i] for i in e},
-        "H": {i: g1 ** s[i] for i in s},
+        "hk": {i: g1 ** s[i] for i in s},
             "universe_size": self.universe_size,
         }
 
@@ -86,16 +86,16 @@ class AVHODBAC(ABEnc):
         "s": s,
         }
 
-        return pk, msk
+        return mpk, msk
 
-    def sender_keygen(self, pk, msk, attributes):
+    def sender_keygen(self, mpk, msk, attributes):
         self._validate_attributes(attributes)
         mu = self._random_nonzero()
         components = {}
         for i, value in attributes.items():
             denominator = msk["t"][i] if value == 1 else msk["e"][i]
             sk_i = mu / denominator
-            components[i] = pk["g2"] ** sk_i
+            components[i] = mpk["g2"] ** sk_i
 
         return {
             "role": "sender",
@@ -104,14 +104,14 @@ class AVHODBAC(ABEnc):
             "K": components,
         }
 
-    def receiver_keygen(self, pk, msk, attributes):
+    def receiver_keygen(self, mpk, msk, attributes):
         self._validate_attributes(attributes)
         theta = self._random_nonzero()
         components = {}
 
         for i, value in attributes.items():
             denominator = msk["t"][i] if value == 1 else msk["e"][i]
-            components[i] = pk["g2"] ** (theta / denominator)
+            components[i] = mpk["g2"] ** (theta / denominator)
 
         return {
             "role": "receiver",
@@ -120,7 +120,7 @@ class AVHODBAC(ABEnc):
             "K": components,
         }
 
-    def policy_keygen(self, pk, msk, sender_policy_str, receiver_policy_str):
+    def policy_keygen(self, mpk, msk, sender_policy_str, receiver_policy_str):
         """
         PolKeyGen(msk, S, R) -> (pk_S, pk_R)
 
@@ -182,7 +182,7 @@ class AVHODBAC(ABEnc):
 
             # pk_S,j = g^(lambda_S,j * t_i/e_i)
             sender_components[literal] = (
-                pk["g1"] ** (lambda_sender * factor)
+                mpk["g1"] ** (lambda_sender * factor)
             )
 
         pk_S = {
@@ -228,7 +228,7 @@ class AVHODBAC(ABEnc):
 
             # pk_R,j = g^(lambda_R,j * t_i/e_i)
             receiver_components[literal] = (
-                pk["g1"] ** (lambda_receiver * factor)
+                mpk["g1"] ** (lambda_receiver * factor)
             )
 
         pk_R = {
@@ -280,7 +280,7 @@ class AVHODBAC(ABEnc):
 
         return sk_y
 
-    def encrypt(self, pk, sender_key, sender_policy_key, x):
+    def encrypt(self, mpk, sender_key, sender_policy_key, x):
         if sender_key["role"] != "sender":
             raise ValueError("encrypt requires a sender key")
 
@@ -307,13 +307,13 @@ class AVHODBAC(ABEnc):
             in sender_policy_key["components"].items()
         }
 
-        base_pairing = pair(pk["g1"], pk["g2"])
-        g2_s = pk["g2"] ** s
+        base_pairing = pair(mpk["g1"], mpk["g2"])
+        g2_s = mpk["g2"] ** s
         ck = {}
 
         for k in range(1, self.universe_size + 1):
             x_k = self.group.init(ZR, x[k - 1])
-            h_k = pk["H"][k]
+            h_k = mpk["hk"][k]
 
             # C_k = e(g,g)^(s*s_k) * e(g,g)^(x_k)
             ck[k] = (

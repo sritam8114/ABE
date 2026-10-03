@@ -27,7 +27,7 @@ def main():
     print("    Sender KeyGen         : SUCCESS")
 
     print("\n[3] Receiver KeyGen")
-    receiver = scheme.receiver_keygen(
+    receiver_rk, receiver_theta = scheme.receiver_keygen(
         mpk,
         msk,
         receiver_attributes,
@@ -69,7 +69,8 @@ def main():
     print("    C_k components        :", sorted(ciphertext["ck"].keys()))
 
     trapdoor, local_secret = scheme.transform_keygen(
-        receiver,
+        receiver_rk,
+        receiver_theta,
         receiver_policy_key,
     )
 

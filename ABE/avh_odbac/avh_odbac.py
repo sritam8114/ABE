@@ -110,19 +110,19 @@ class AVHODBAC(ABEnc):
 
     def receiver_keygen(self, mpk, msk, attributes):
         self._validate_attributes(attributes)
+
         theta = self._random_nonzero()
-        components = {}
+        rk = {}
 
         for i, value in attributes.items():
-            denominator = msk["t"][i] if value == 1 else msk["e"][i]
-            components[i] = mpk["g2"] ** (theta / denominator)
+            if value == 1:
+                rk_i = theta / msk["t"][i]
+            else:
+                rk_i = theta / msk["e"][i]
 
-        return {
-            "role": "receiver",
-            "user_id": theta,
-            "attributes": dict(attributes),
-            "K": components,
-        }
+            rk[i] = mpk["g2"] ** rk_i
+
+        return rk, theta
 
     def policy_keygen(self, mpk, msk, sender_policy_str, receiver_policy_str):
         """
@@ -335,26 +335,41 @@ class AVHODBAC(ABEnc):
 
         return ciphertext, s
 
-    def transform_keygen(self, receiver_key, receiver_policy_key):
-        if receiver_key["role"] != "receiver":
-            raise ValueError("transform_keygen requires a receiver key")
+    def transform_keygen(self, rk, theta, receiver_policy_key):
+        """
+        TrGen(rk, pk_R) -> TR
+
+        The receiver randomly chooses:
+            v <- Zp
+            delta_u <- Zp
+
+        and uses the corrected blinding exponent:
+            v * delta_u
+
+        TR1,u = rk_u^(v * delta_u)
+        TR2,j = pk_R,j^(v * delta_u)
+
+        theta is kept separately as the receiver identifier used
+        by the CSP during the matching phase.
+        """
 
         v = self._random_nonzero()
-        delta = self._random_nonzero()
-        blind = v * delta
+        delta_u = self._random_nonzero()
+        blind = v * delta_u
 
         tr1 = {
             index: component ** blind
-            for index, component in receiver_key["K"].items()
+            for index, component in rk.items()
         }
 
         tr2 = {
             literal: component ** blind
-            for literal, component in receiver_policy_key["components"].items()
+            for literal, component
+            in receiver_policy_key["components"].items()
         }
 
         trapdoor = {
-            "receiver_id": receiver_key["user_id"],
+            "receiver_id": theta,
             "receiver_policy": receiver_policy_key["policy"],
             "receiver_msp": receiver_policy_key["msp"],
             "tr1": tr1,
@@ -363,10 +378,11 @@ class AVHODBAC(ABEnc):
 
         local_secret = {
             "v": v,
-            "delta": delta,
+            "delta": delta_u,
         }
 
         return trapdoor, local_secret
+
     def match(
         self,
         ciphertext,

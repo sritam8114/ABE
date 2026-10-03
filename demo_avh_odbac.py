@@ -19,7 +19,7 @@ def main():
     receiver_attributes = {1: 1, 2: 0, 3: 0}
 
     print("\n[2] Sender KeyGen")
-    sender = scheme.sender_keygen(
+    sender_sk, sender_mu = scheme.sender_keygen(
         mpk,
         msk,
         sender_attributes,
@@ -58,7 +58,8 @@ def main():
 
     ciphertext, s = scheme.encrypt(
         mpk,
-        sender,
+        sender_sk,
+        sender_mu,
         sender_policy_key,
         x,
     )

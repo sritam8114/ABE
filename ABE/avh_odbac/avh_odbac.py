@@ -90,19 +90,23 @@ class AVHODBAC(ABEnc):
 
     def sender_keygen(self, mpk, msk, attributes):
         self._validate_attributes(attributes)
-        mu = self._random_nonzero()
-        components = {}
-        for i, value in attributes.items():
-            denominator = msk["t"][i] if value == 1 else msk["e"][i]
-            sk_i = mu / denominator
-            components[i] = mpk["g2"] ** sk_i
 
-        return {
-            "role": "sender",
-            "user_id": mu,
-            "attributes": dict(attributes),
-            "K": components,
-        }
+        # Unique sender identifier mu, kept separate from sk.
+        mu = self._random_nonzero()
+
+        # sk = {sk_i}
+        sk = {}
+
+        for i, value in attributes.items():
+            if value == 1:
+                sk_i = mu / msk["t"][i]
+            else:
+                sk_i = mu / msk["e"][i]
+
+            sk[i] = mpk["g2"] ** sk_i
+
+        # Return the attribute secret key and mu separately.
+        return sk, mu
 
     def receiver_keygen(self, mpk, msk, attributes):
         self._validate_attributes(attributes)
@@ -280,10 +284,7 @@ class AVHODBAC(ABEnc):
 
         return sk_y
 
-    def encrypt(self, mpk, sender_key, sender_policy_key, x):
-        if sender_key["role"] != "sender":
-            raise ValueError("encrypt requires a sender key")
-
+    def encrypt(self, mpk, sender_sk, sender_mu, sender_policy_key, x):
         if not isinstance(x, (list, tuple)):
             raise TypeError("x must be a list or tuple")
 
@@ -298,7 +299,7 @@ class AVHODBAC(ABEnc):
 
         ct2 = {
             index: component ** beta
-            for index, component in sender_key["K"].items()
+            for index, component in sender_sk.items()
         }
 
         ct3 = {
@@ -322,7 +323,7 @@ class AVHODBAC(ABEnc):
             )
 
         ciphertext = {
-            "sender_id": sender_key["user_id"],
+            "sender_id": sender_mu,
             "sender_policy": sender_policy_key["policy"],
             "sender_msp": sender_policy_key["msp"],
             "ct2": ct2,

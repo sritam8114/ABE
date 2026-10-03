@@ -284,7 +284,7 @@ class AVHODBAC(ABEnc):
 
         return sk_y
 
-    def encrypt(self, mpk, sender_sk, sender_mu, sender_policy_key, x):
+    def encrypt(self, mpk, sender_sk, sender_mu, pk_S, x):
         if not isinstance(x, (list, tuple)):
             raise TypeError("x must be a list or tuple")
 
@@ -305,7 +305,7 @@ class AVHODBAC(ABEnc):
         ct3 = {
             literal: component ** alpha
             for literal, component
-            in sender_policy_key["components"].items()
+            in pk_S["components"].items()
         }
 
         base_pairing = pair(mpk["g1"], mpk["g2"])
@@ -324,8 +324,8 @@ class AVHODBAC(ABEnc):
 
         ciphertext = {
             "sender_id": sender_mu,
-            "sender_policy": sender_policy_key["policy"],
-            "sender_msp": sender_policy_key["msp"],
+            "sender_policy": pk_S["policy"],
+            "sender_msp": pk_S["msp"],
             "ct2": ct2,
             "ct3": ct3,
             "ck": ck,
@@ -335,7 +335,7 @@ class AVHODBAC(ABEnc):
 
         return ciphertext, s
 
-    def transform_keygen(self, rk, theta, receiver_policy_key):
+    def transform_keygen(self, rk, theta, pk_R):
         """
         TrGen(rk, pk_R) -> TR
 
@@ -365,13 +365,13 @@ class AVHODBAC(ABEnc):
         tr2 = {
             literal: component ** blind
             for literal, component
-            in receiver_policy_key["components"].items()
+            in pk_R["components"].items()
         }
 
         trapdoor = {
             "receiver_id": theta,
-            "receiver_policy": receiver_policy_key["policy"],
-            "receiver_msp": receiver_policy_key["msp"],
+            "receiver_policy": pk_R["policy"],
+            "receiver_msp": pk_R["msp"],
             "tr1": tr1,
             "tr2": tr2,
         }

@@ -8,7 +8,7 @@ def main():
     print("             AVH-ODBAC CLEAN DEMO")
     print("=" * 60)
 
-    group = PairingGroup("MNT224")
+    group = PairingGroup("SS512")
     scheme = AVHODBAC(group, universe_size=3, B=10)
 
     print("\n[1] Setup")
@@ -56,7 +56,7 @@ def main():
     print("\n[6] FKGen")
     print("    FKGen                 : SUCCESS")
 
-    ciphertext, s = scheme.encrypt(
+    ciphertext = scheme.encrypt(
         mpk,
         sender_sk,
         sender_mu,
@@ -88,25 +88,32 @@ def main():
     print("    Match (CT, TR)        : SUCCESS")
     print("    MH                    : SUCCESS")
 
-    result = scheme.final_decrypt(
+    D = scheme.final_decrypt(
         ciphertext,
         partial,
         local_secret,
         sk_y,
-        x,
         y,
-        s,
     )
 
-    expected = scheme.group.init(ZR, 4)
+    # Test-only verification.
+    # The demo knows x; the receiver-side algorithm does not use x.
+    inner_product = sum(
+        x_k * y_k for x_k, y_k in zip(x, y)
+    )
+
+    expected_D = ciphertext["base_pairing"] ** group.init(
+        ZR, inner_product
+    )
 
     print("\n[10] Decryption / Verification")
 
-    if result == expected:
-        print("    K = MH^(1/(v*delta_u)): SUCCESS")
+    if D == expected_D:
+        print("    Receiver decryption   : SUCCESS")
         print("    D verification        : SUCCESS")
-        print("    <x,y>                 :", result)
+        print("    <x,y> (test only)     :", inner_product)
     else:
+        print("    Receiver decryption   : FAILED")
         print("    D verification        : FAILED")
         return
 

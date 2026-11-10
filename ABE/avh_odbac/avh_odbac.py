@@ -1,4 +1,4 @@
-from charm.toolbox.pairinggroup import ZR, G1, G2, pair
+from charm.toolbox.pairinggroup import ZR, G1, pair
 from charm.toolbox.ABEnc import ABEnc
 from ..msp import MSP
 
@@ -55,11 +55,9 @@ class AVHODBAC(ABEnc):
         return index, value
 
     def setup(self):
-        g1 = self.group.random(G1)
-        g2 = self.group.random(G2)
+        g = self.group.random(G1)
 
         f = self._random_nonzero()
-        self._master_f = f
         t = {}
         e = {}
         s = {}
@@ -70,12 +68,11 @@ class AVHODBAC(ABEnc):
             s[i] = self._random_nonzero()
 
         mpk = {
-            "g1": g1,
-            "g2": g2,
-            "F": g1 ** f,
-            "T": {i: g1 ** t[i] for i in t},
-            "E": {i: g1 ** e[i] for i in e},
-        "hk": {i: g1 ** s[i] for i in s},
+            "g": g,
+            "F": g ** f,
+            "T": {i: g ** t[i] for i in t},
+            "E": {i: g ** e[i] for i in e},
+        "hk": {i: g ** s[i] for i in s},
             "universe_size": self.universe_size,
         }
 
@@ -103,7 +100,7 @@ class AVHODBAC(ABEnc):
             else:
                 sk_i = mu / msk["e"][i]
 
-            sk[i] = mpk["g2"] ** sk_i
+            sk[i] = mpk["g"] ** sk_i
 
         # Return the attribute secret key and mu separately.
         return sk, mu
@@ -120,7 +117,7 @@ class AVHODBAC(ABEnc):
             else:
                 rk_i = theta / msk["e"][i]
 
-            rk[i] = mpk["g2"] ** rk_i
+            rk[i] = mpk["g"] ** rk_i
 
         return rk, theta
 
@@ -186,7 +183,7 @@ class AVHODBAC(ABEnc):
 
             # pk_S,j = g^(lambda_S,j * t_i/e_i)
             sender_components[literal] = (
-                mpk["g1"] ** (lambda_sender * factor)
+                mpk["g"] ** (lambda_sender * factor)
             )
 
         pk_S = {
@@ -232,7 +229,7 @@ class AVHODBAC(ABEnc):
 
             # pk_R,j = g^(lambda_R,j * t_i/e_i)
             receiver_components[literal] = (
-                mpk["g1"] ** (lambda_receiver * factor)
+                mpk["g"] ** (lambda_receiver * factor)
             )
 
         pk_R = {
@@ -308,8 +305,8 @@ class AVHODBAC(ABEnc):
             in pk_S["components"].items()
         }
 
-        base_pairing = pair(mpk["g1"], mpk["g2"])
-        g2_s = mpk["g2"] ** s
+        base_pairing = pair(mpk["g"], mpk["g"])
+        g_s = mpk["g"] ** s
         ck = {}
 
         for k in range(1, self.universe_size + 1):
@@ -318,7 +315,7 @@ class AVHODBAC(ABEnc):
 
             # C_k = e(g,g)^(s*s_k) * e(g,g)^(x_k)
             ck[k] = (
-                pair(h_k, g2_s)
+                pair(h_k, g_s)
                 * (base_pairing ** x_k)
             )
 
@@ -330,10 +327,9 @@ class AVHODBAC(ABEnc):
             "ct3": ct3,
             "ck": ck,
             "base_pairing": base_pairing,
-            "s": s,
         }
 
-        return ciphertext, s
+        return ciphertext
 
     def transform_keygen(self, rk, theta, pk_R):
         """
@@ -594,22 +590,21 @@ class AVHODBAC(ABEnc):
         partial_ciphertext,
         local_secret,
         sk_y,
-        x,
         y,
-        s,
     ):
         """
-        Final receiver-side verification.
+        Receiver-side functional decryption.
 
-        Teacher correction:
+        The receiver computes:
 
-            MH = e(g,g)^(f*s*v*delta_u)
-
-            K = MH^(1/(v*delta_u))
+            K = MH^(1 / (v * delta_u))
 
             D = product(C_k^y_k) / K^SK_y
 
-            D = e(g,g)^<x,y>
+        The method returns D.
+
+        The test-only comparison with e(g,g)^<x,y> is
+        performed separately by the demonstration program.
         """
 
         if partial_ciphertext is None:
@@ -624,61 +619,35 @@ class AVHODBAC(ABEnc):
         if "base_pairing" not in ciphertext:
             raise ValueError("ciphertext does not contain base_pairing")
 
-        if s is None:
-            raise ValueError("s is required for final verification")
-
-        if not isinstance(x, (list, tuple)):
-            raise TypeError("x must be a list or tuple")
-
         if not isinstance(y, (list, tuple)):
             raise TypeError("y must be a list or tuple")
 
-        if len(x) != self.universe_size:
-            raise ValueError(
-                "x length must equal universe_size"
-            )
-
         if len(y) != self.universe_size:
-            raise ValueError(
-                "y length must equal universe_size"
-            )
+            raise ValueError("y length must equal universe_size")
 
-        # ----------------------------------------------------------
-        # 1. Recalculate MH exactly from the teacher's formula
-        # ----------------------------------------------------------
+        for y_k in y:
+            if not isinstance(y_k, int):
+                raise TypeError("each y_k must be an integer")
+            if y_k < 0 or y_k > self.B:
+                raise ValueError("each y_k must satisfy 0 <= y_k <= B")
 
-        f = self._master_f
-        # s is supplied separately by Encryption.
+        if "v" not in local_secret or "delta" not in local_secret:
+            raise ValueError("receiver blinding factors are missing")
+
         v = local_secret["v"]
         delta_u = local_secret["delta"]
 
-        calculated_mh = ciphertext["base_pairing"] ** (
-            f * s * v * delta_u
-        )
+        if v == 0 or delta_u == 0:
+            raise ValueError("blinding factors must be nonzero")
 
-        if calculated_mh != partial_ciphertext["mh"]:
-            print("    MH formula check      : FAILED")
-            return None
+        # 1. Obtain the CSP's matching result.
+        MH = partial_ciphertext["mh"]
 
-        print("    MH formula check      : SUCCESS")
+        # 2. Remove receiver-side blinding.
+        K = MH ** (1 / (v * delta_u))
 
-        # ----------------------------------------------------------
-        # 2. Recover K from MH
-        # ----------------------------------------------------------
-
-        K = calculated_mh ** (
-            1 / (v * delta_u)
-        )
-
-        print("    K reconstruction      : SUCCESS")
-
-        # ----------------------------------------------------------
-        # 3. Compute numerator = product(C_k ^ y_k)
-        # ----------------------------------------------------------
-
-        numerator = ciphertext["base_pairing"] ** self.group.init(
-            ZR, 0
-        )
+        # 3. Compute numerator = product(C_k ^ y_k).
+        numerator = ciphertext["base_pairing"] ** self.group.init(ZR, 0)
 
         for k in range(1, self.universe_size + 1):
             if k not in ciphertext["ck"]:
@@ -689,43 +658,10 @@ class AVHODBAC(ABEnc):
             y_k = self.group.init(ZR, y[k - 1])
             numerator *= ciphertext["ck"][k] ** y_k
 
-        # ----------------------------------------------------------
-        # 4. Compute denominator = K ^ SK_y
-        # ----------------------------------------------------------
-
+        # 4. Compute denominator = K ^ SK_y.
         denominator = K ** sk_y
 
-        # ----------------------------------------------------------
-        # 5. Compute D
-        # ----------------------------------------------------------
-
+        # 5. Compute and return D.
         D = numerator / denominator
 
-        # ----------------------------------------------------------
-        # 6. Compute <x,y>
-        # ----------------------------------------------------------
-
-        inner_product = self.group.init(ZR, 0)
-
-        for k in range(1, self.universe_size + 1):
-            x_k = self.group.init(ZR, x[k - 1])
-            y_k = self.group.init(ZR, y[k - 1])
-
-            inner_product += x_k * y_k
-
-        # ----------------------------------------------------------
-        # 7. Expected D
-        # ----------------------------------------------------------
-
-        expected_D = ciphertext["base_pairing"] ** inner_product
-
-        if D != expected_D:
-            print("    D verification        : FAILED")
-            print("    <x,y>                 :", inner_product)
-            return None
-
-        print("    D verification        : SUCCESS")
-        print("    <x,y>                 :", inner_product)
-
-        return inner_product
-
+        return D

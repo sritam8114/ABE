@@ -5,3 +5,11 @@ __pycache__/
 charm/
 pbc-0.5.14/
 pbc-0.5.14.tar.gz
+
+# AVH-ODBAC local MPC experiment data
+.avh_odbac_v410_lab/
+.avh_odbac_v4101_lab/
+.avh_odbac_v412_lab/
+.avh_odbac_v412_attributes_*_backup_*/
+.avh_odbac_v49_lab/
+.avh_odbac_replay_test.sqlite3
